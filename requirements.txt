@@ -1,0 +1,36 @@
+# PLC面板数据采集系统 - 依赖清单
+# ================================
+# 安装: pip install -r requirements.txt
+
+# ---- 后端核心 ----
+
+# Modbus TCP客户端（Modbus TCP网关模式）
+pymodbus>=3.5.0
+
+# 数据库ORM
+SQLAlchemy>=2.0.0
+
+# MySQL驱动
+PyMySQL>=1.1.0
+
+# PostgreSQL驱动（可选，如果使用PostgreSQL）
+# psycopg2-binary>=2.9.0
+
+# 配置文件解析
+PyYAML>=6.0
+
+# ---- GUI界面 ----
+
+# Qt GUI框架
+PySide6>=6.5.0
+
+# asyncio与Qt事件循环桥接（监控端需要）
+qasync>=0.27.0
+
+# 实时图表（历史趋势）
+pyqtgraph>=0.13.0
+
+# ---- 打包工具 ----
+
+# Windows exe打包
+pyinstaller>=6.0

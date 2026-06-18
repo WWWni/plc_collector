@@ -1,0 +1,80 @@
+# PLC面板数据采集系统 - 配置文件
+# 由采集程序配置界面自动生成
+# ================================
+
+servers:
+- name: 串口服务器1
+  connection:
+    mode: modbus_tcp
+    host: 192.168.1.200
+    port: 502
+    tcp_timeout: 5
+    tcp_retry: 3
+  serial:
+    baudrate: 9600
+    data_bits: 8
+    stop_bits: 1
+    parity: none
+  devices:
+  - slave_addr: 1
+    name: 计米器1
+    device_type: n90sc_counter
+  - slave_addr: 2
+    name: 圆机2
+    device_type: weaving_panel
+  - slave_addr: 3
+    name: 圆机3
+    device_type: weaving_panel
+  - slave_addr: 4
+    name: 圆机4
+    device_type: weaving_panel
+  - slave_addr: 5
+    name: 圆机5
+    device_type: weaving_panel
+  - slave_addr: 6
+    name: 圆机6
+    device_type: weaving_panel
+  - slave_addr: 7
+    name: 圆机7
+    device_type: weaving_panel
+  - slave_addr: 8
+    name: 圆机8
+    device_type: weaving_panel
+  - slave_addr: 9
+    name: 圆机9
+    device_type: weaving_panel
+  - slave_addr: 10
+    name: 圆机10
+    device_type: weaving_panel
+scheduler:
+  interval_seconds: 4
+  batch_read: true
+  timeout: 1.0
+  retry: 0
+logging:
+  level: INFO
+  file: logs/collector.log
+  max_bytes: 10485760
+  backup_count: 5
+database:
+  engine: mysql
+  host: 192.168.0.33
+  port: 3306
+  username: root
+  password: '123456'
+  database: oldmes
+display_config:
+  weaving_panel:
+  - key: fabric_count
+    label: fabric_count
+  - key: fabric_total
+    label: fabric_total
+  - key: speed
+    label: speed
+  n90sc_counter:
+  - key: unit_text
+    label: unit_text
+  - key: mode_text
+    label: mode_text
+  - key: display_value
+    label: display_value
