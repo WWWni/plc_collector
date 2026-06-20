@@ -1,18 +1,31 @@
 # PLC面板数据采集系统
 
-基于ZLAN5143D串口服务器的工业织机面板数据采集程序，支持TCP透传和Modbus TCP两种通信模式。
+基于ZLAN5143D串口服务器的工业面板数据采集系统，支持TCP透传和Modbus TCP两种通信模式，提供GUI监控界面和命令行两种运行方式。
 
 ## 系统架构
 
 ```
 面板设备(RS485) ──RS485──> ZLAN5143D ──Ethernet──> 采集程序(Python) ──> MySQL/PostgreSQL
+                                                       │
+                                                       ├── monitor_app.py  (GUI监控+配置)
+                                                       └── main.py         (命令行采集)
 ```
+
+**核心特性：**
+- 多串口服务器架构：每台ZLAN5143D独立传输层，互不影响
+- 设备类型注册表：从数据库动态加载设备类型定义，支持多种设备混采
+- GUI监控界面：实时数据面板 + 故障告警 + 内置配置管理，单实例运行
+- 多工控机数据隔离：通过 `collector_id` 自动隔离不同工控机的数据
 
 ## 快速开始
 
 ### 1. 安装依赖
 
 ```bash
+# 推荐使用虚拟环境
+python -m venv my_env
+my_env\Scripts\activate
+
 pip install -r requirements.txt
 ```
 
@@ -41,10 +54,58 @@ pip install -r requirements.txt
 
 ### 3. 修改配置文件
 
-编辑 `config.yaml`，设置ZLAN5143D的IP地址和端口，以及设备列表。
+编辑 `config.yaml`，参考以下多服务器格式：
+
+```yaml
+servers:
+  - name: 串口服务器1
+    connection:
+      mode: modbus_tcp          # 或 tcp_transparent
+      host: 192.168.1.200
+      port: 502
+      tcp_timeout: 1
+    serial:
+      baudrate: 9600
+      data_bits: 8
+      stop_bits: 1
+      parity: none
+    devices:
+      - slave_addr: 1
+        name: 设备1
+        device_type: n90sc_counter
+
+scheduler:
+  interval_seconds: 4           # 采集间隔（秒）
+  batch_read: true              # 批量读寄存器
+  timeout: 0.3                  # Modbus读取超时（秒）
+  retry: 1                      # Modbus读取重试次数
+  retry_delay: 0.1              # 重试前等待间隔（秒）
+
+database:
+  engine: mysql
+  host: 192.168.0.33
+  port: 3306
+  username: root
+  password: '123456'
+  database: oldmes
+  table_name: plc_data          # 写入表名（可自定义）
+```
 
 ### 4. 运行
 
+**GUI模式（推荐）：**
+```bash
+# 正常模式（连接真实设备）
+python monitor_app.py
+
+# 模拟模式（随机测试数据，无需设备）
+python monitor_app.py --test
+
+# 指定配置文件
+python monitor_app.py -c my_config.yaml
+```
+
+**命令行模式（无GUI，仅采集入库）：**
 ```bash
 # 正常采集（写入数据库）
 python main.py
@@ -56,75 +117,67 @@ python main.py -c my_config.yaml
 python main.py --test
 ```
 
-## 通信协议说明
-
-本协议基于Modbus RTU格式：
-- 波特率: 9600bps
-- 数据位: 8, 停止位: 1, 无校验
-- 功能码: 0x03(读), 0x06(写单个), 0x10(写多个)
-- 寄存器范围: 2202-2221 (20个寄存器，只读)
-
-### 寄存器映射表
-
-| 地址 | 名称 | 说明 |
-|------|------|------|
-| 2202 | 当前档位 | 高字节=运行档位, 低字节=点动档位 |
-| 2203-2204 | 当前织布数 | 32位整数 (高/低16位) |
-| 2205 | 当前清车数 | |
-| 2206 | 当前班别 | |
-| 2207-2208 | A班数 | 32位 |
-| 2209-2210 | B班数 | 32位 |
-| 2211-2212 | C班数 | 32位 |
-| 2213 | 喷油模式 | |
-| 2214-2215 | 织布总数 | 32位 |
-| 2216 | 运行状态 | 位域 (见下方说明) |
-| 2217 | 故障状态 | 位域 (见下方说明) |
-| 2218 | 当前转速 | 实际值 = 寄存器值 / 10 |
-| 2219 | 纱长1 | 实际值 = 寄存器值 / 10 |
-| 2220 | 纱长2 | 实际值 = 寄存器值 / 10 |
-| 2221 | 纱长3 | 实际值 = 寄存器值 / 10 |
-
-### 运行状态位域 (寄存器2216)
-
-**高字节:** 强迫 | 清车 | 风扇 | 照布 | 照明 | 马达 | 照明2 | 油泵
-
-**低字节:** 班别C | 班别B | 班别A | 针驱 | 油驱 | 运行 | 停止 | 点动
-
-### 故障状态位域 (寄存器2217)
-
-**高字节:** 织布完成 | 清车完成 | 超速 | 停止键 | 超强迫 | 强迫喷油 | 强迫风扇 | 保险丝
-
-**低字节:** 安全门 | 变频器 | 缺气 | 缺油 | 破布 | 探针 | 下断纱 | 上断纱
+**调试快捷脚本：**
+```bash
+# 自动激活虚拟环境并启动（Windows）
+run_debug.bat                  # 正常模式
+run_debug.bat --test           # 模拟模式
+run_debug.bat -c my_config.yaml
+```
 
 ## 项目结构
 
 ```
 plc_collector/
-├── config.yaml              # 配置文件
-├── main.py                  # 程序入口
-├── config_loader.py         # 配置加载
+├── monitor_app.py             # GUI统一启动入口（采集+监控+配置）
+├── main.py                    # 命令行采集入口（无GUI）
+├── config.yaml                # 配置文件
+├── config_loader.py           # 配置加载与校验
+├── run_debug.bat              # 虚拟环境调试启动脚本
+├── build.bat                  # PyInstaller打包脚本
+├── requirements.txt           # 依赖清单
 ├── protocol/
-│   ├── modbus_rtu.py        # Modbus RTU帧构造/解析/CRC16
-│   └── register_map.py      # 寄存器映射和位域解析
+│   ├── modbus_rtu.py          # Modbus RTU帧构造/解析/CRC16
+│   ├── device_types.py        # 设备类型注册表（从DB加载）
+│   └── generic_parser.py      # 通用寄存器解析器
 ├── transport/
-│   ├── base.py              # 传输层抽象基类
-│   ├── tcp_transparent.py   # TCP透传模式
-│   └── modbus_tcp.py        # Modbus TCP网关模式
+│   ├── base.py                # 传输层抽象基类
+│   ├── tcp_transparent.py     # TCP透传模式
+│   └── modbus_tcp.py          # Modbus TCP网关模式
 ├── collector/
-│   ├── device.py            # 单台设备采集
-│   └── scheduler.py         # 多设备轮询调度
+│   ├── device.py              # 单台设备采集
+│   └── scheduler.py           # 多设备轮询调度
 ├── storage/
-│   ├── models.py            # 数据库模型
-│   └── db_manager.py        # 数据库管理
+│   ├── models.py              # 数据库ORM模型
+│   ├── db_manager.py          # 数据库管理（连接/写入/清理）
+│   └── fault_events.py        # 故障事件持久化
+├── gui/
+│   ├── monitor/
+│   │   ├── main_window.py     # 监控主窗口（工具栏+Tab页）
+│   │   ├── dashboard_tab.py   # 实时数据面板
+│   │   └── alarms_tab.py      # 故障告警面板
+│   ├── config/
+│   │   ├── main_window.py     # 配置对话框（Tab式）
+│   │   ├── servers_page.py    # 服务器配置页
+│   │   ├── devices_page.py    # 设备管理页（含范围新增）
+│   │   ├── database_page.py   # 数据库配置页
+│   │   ├── scheduler_page.py  # 调度配置页
+│   │   └── display_page.py    # 展示字段配置页
+│   └── shared/
+│       ├── async_bridge.py    # asyncio与Qt事件循环桥接
+│       └── styles.py          # 全局样式表
 ├── utils/
-│   └── logger.py            # 日志
+│   ├── logger.py              # 日志配置
+│   └── paths.py               # 路径工具（兼容开发/打包）
 └── tests/
-    └── test_protocol.py     # 单元测试
+    └── test_protocol.py       # 单元测试
 ```
 
-## 性能说明
+## 打包发布
 
-- 9600bps下，单次20寄存器读取约30-50ms
-- 10台设备轮询一圈约0.5-1秒
-- 建议采集间隔不低于2秒
-- Modbus TCP网关模式下可利用存储型网关高速缓存，响应更快
+```bash
+build.bat
+```
+
+打包输出在 `dist/PLC_Collector/` 目录，内含 `monitor_app.exe` + `config.yaml` + `_internal/`，整个目录压缩即可分发。
+

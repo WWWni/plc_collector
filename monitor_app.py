@@ -128,6 +128,15 @@ def main():
         backup_count=config.logging.backup_count,
     )
 
+    # 同步加载本地缓存（毫秒级），确保注册表在界面创建前就有数据
+    config_dir = os.path.dirname(os.path.abspath(args.config))
+    from protocol.device_types import load_cache
+    n_cached = load_cache(config_dir)
+    if n_cached > 0:
+        logger.info(f"从缓存预加载 {n_cached} 个设备类型定义")
+    else:
+        logger.info("无本地缓存，界面显示后将从数据库加载")
+
     # 初始化Qt + asyncio混合事件循环
     from gui.shared.async_bridge import setup_async_qt
     from gui.shared.styles import MAIN_STYLE
@@ -137,7 +146,6 @@ def main():
     app.setStyleSheet(MAIN_STYLE)
 
     # 立即创建并显示主窗口（数据库延迟初始化）
-    config_dir = os.path.dirname(os.path.abspath(args.config))
     from gui.monitor.main_window import MonitorMainWindow
     window = MonitorMainWindow(
         config=config,

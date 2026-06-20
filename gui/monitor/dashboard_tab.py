@@ -85,9 +85,9 @@ class DeviceCard(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setMaximumWidth(185)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(2)
+        self._main_layout = QVBoxLayout(self)
+        self._main_layout.setContentsMargins(6, 4, 6, 4)
+        self._main_layout.setSpacing(2)
 
         # ---- 头部: 设备名 + 状态 ----
         header = QHBoxLayout()
@@ -111,10 +111,22 @@ class DeviceCard(QFrame):
             f"font-size: 10px; color: {offline_color}; font-weight: bold;"
         )
         header.addWidget(self._status_label)
-        layout.addLayout(header)
+        self._main_layout.addLayout(header)
 
         # ---- 数据区: 由 display_fields 驱动 ----
-        data_grid = QGridLayout()
+        self._build_data_area()
+
+    def _build_data_area(self):
+        """构建/重建数据展示区"""
+        # 清除旧的数据区
+        if hasattr(self, '_data_grid_widget') and self._data_grid_widget:
+            self._main_layout.removeWidget(self._data_grid_widget)
+            self._data_grid_widget.deleteLater()
+        self._data_labels.clear()
+        self._unit_labels.clear()
+
+        self._data_grid_widget = QWidget()
+        data_grid = QGridLayout(self._data_grid_widget)
         data_grid.setContentsMargins(0, 0, 0, 0)
         data_grid.setHorizontalSpacing(4)
         data_grid.setVerticalSpacing(1)
@@ -148,7 +160,7 @@ class DeviceCard(QFrame):
                 data_grid.addWidget(unit_lbl, row, 2)
                 self._unit_labels[key] = unit_lbl
 
-        layout.addLayout(data_grid)
+        self._main_layout.addWidget(self._data_grid_widget)
 
     def update_data(self, data: dict):
         """用采集数据更新卡片"""
@@ -274,6 +286,12 @@ class DashboardTab(QWidget):
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.addWidget(scroll)
+
+    def refresh_type_defs(self):
+        """DB更新后刷新所有卡片的type_def（从注册表获取最新定义）"""
+        for card in self._cards.values():
+            card._type_def = get_safe(card.device_type)
+            card.set_offline()
 
     def update_devices(self, data_list: List[dict]):
         """

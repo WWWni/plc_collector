@@ -363,15 +363,9 @@ class MonitorMainWindow(QMainWindow):
             n = load_device_types_from_db(self._db_manager.session_factory)
             if n > 0:
                 save_cache(self._config_dir)
-            logger.info(f"数据库初始化成功，从DB加载 {n} 个设备类型定义")
+            logger.info(f"数据库初始化成功，从DB加载 {n} 个设备类型定义（缓存已更新）")
         except Exception as e:
-            logger.warning(f"数据库初始化失败，尝试从本地缓存加载: {e}")
-            from protocol.device_types import load_cache
-            n = load_cache(self._config_dir)
-            if n > 0:
-                logger.info(f"从缓存恢复 {n} 个设备类型定义")
-            else:
-                logger.warning("无可用缓存，程序将以无设备类型模式运行")
+            logger.warning(f"数据库初始化失败，继续使用缓存中的设备类型定义: {e}")
             self._db_manager = None
 
         # 通过信号通知主线程更新 UI（线程安全）
@@ -389,6 +383,9 @@ class MonitorMainWindow(QMainWindow):
             f"color: {COLORS['status_offline']}; font-weight: bold; "
             f"font-size: 13px; padding: 0 8px;"
         )
+        # 刷新卡片的type_def，让离线状态立即显示正确的中文和颜色
+        if hasattr(self, '_dashboard'):
+            self._dashboard.refresh_type_defs()
 
     def _update_clock(self):
         """更新时钟显示"""
