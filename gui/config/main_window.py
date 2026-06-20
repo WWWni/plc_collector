@@ -179,6 +179,13 @@ class ConfigMainWindow(QDialog):
         save_btn.clicked.connect(self._save_config)
         bottom_layout.addWidget(save_btn)
 
+        bottom_layout.addSpacing(12)
+
+        close_btn = QPushButton("关闭")
+        close_btn.setMinimumWidth(80)
+        close_btn.clicked.connect(self.accept)
+        bottom_layout.addWidget(close_btn)
+
         right_panel.addWidget(bottom_bar)
 
         right_widget = QWidget()

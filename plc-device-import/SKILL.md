@@ -123,11 +123,16 @@ version: 1.0.0
 选择原则：根据行业经验，优先选择最能反映设备运行状态的核心指标（如产量、速度、温度等），而非所有可用字段。
 
 ```json
-// 仪表板上显示的字段
+// 仪表板上显示的字段 — 必须包含全部四个属性
 {"key": "speed", "label": "转速", "unit": "rpm", "format": ".1f"}
 // format 支持: Python格式字符串(".1f"), "s"(字符串), ","(千分位), "gear"(特殊档位显示)
 // unit 支持: 固定字符串, "dynamic"(从数据中读取), ""(无单位)
 ```
+
+> **⚠ 必须包含完整元数据（key / label / unit / format）**
+> UI 的展示配置页面（DisplayPage）以 `display_fields` 作为字段列表的主数据源。
+> 如果缺少 `unit` 或 `format`，用户在 UI 中勾选该字段后保存到 config.yaml 的条目也会缺失这些属性，导致仪表板卡片渲染时格式错误（数值显示为原始字符串、单位丢失等）。
+> `parse_rules` 和 `bit_fields` 中产生的字段仅作为补充来源，不包含 unit/format 信息。
 
 此定义为设备类型级别的默认值。用户可在本地 config.yaml 中按设备实例自定义覆盖。
 
@@ -179,6 +184,7 @@ print(f"活跃故障: {parser.get_active_faults(result)}")
 - [ ] `bit_fields` 中的 `prefix` + `name` 与 `fault_names` 的 `key` 对应
 - [ ] `run_mode_rules` 引用的字段在 `bit_fields` 或 `parse_rules` 中有定义
 - [ ] `display_fields` 的 `key` 都是已解析出的字段名
+- [ ] `display_fields` 每条都包含完整的 key/label/unit/format 四个属性
 - [ ] `value_mappings` 的 key 与 `value_map` 规则的 `map_name` 对应
 
 ### Step 5: 写入数据库

@@ -13,9 +13,6 @@ SQLAlchemy>=2.0.0
 # MySQL驱动
 PyMySQL>=1.1.0
 
-# PostgreSQL驱动（可选，如果使用PostgreSQL）
-# psycopg2-binary>=2.9.0
-
 # 配置文件解析
 PyYAML>=6.0
 
@@ -26,9 +23,6 @@ PySide6>=6.5.0
 
 # asyncio与Qt事件循环桥接（监控端需要）
 qasync>=0.27.0
-
-# 实时图表（历史趋势）
-pyqtgraph>=0.13.0
 
 # ---- 打包工具 ----
 

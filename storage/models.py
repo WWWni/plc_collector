@@ -125,6 +125,7 @@ class PlcData(Base):
 
     # 元数据
     timestamp = Column(DateTime, nullable=False, default=datetime.now, index=True)
+    collector_id = Column(String(50), nullable=False, default="", index=True)
     server_index = Column(SmallInteger, nullable=False, default=0, index=True)
     slave_addr = Column(SmallInteger, nullable=False, index=True)
     device_name = Column(String(50), nullable=True)

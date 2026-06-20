@@ -91,7 +91,7 @@ class SchedulerPage(QWidget):
         modbus_row.addWidget(QLabel("Modbus读取超时:"))
         self._modbus_timeout_spin = _fix_height(QDoubleSpinBox())
         self._modbus_timeout_spin.setRange(0.1, 30.0)
-        self._modbus_timeout_spin.setSingleStep(0.5)
+        self._modbus_timeout_spin.setSingleStep(0.1)
         self._modbus_timeout_spin.setDecimals(1)
         self._modbus_timeout_spin.setSuffix(" 秒")
         self._modbus_timeout_spin.setFixedWidth(100)
@@ -103,11 +103,20 @@ class SchedulerPage(QWidget):
         self._modbus_retry_spin.setSuffix(" 次")
         self._modbus_retry_spin.setFixedWidth(100)
         modbus_row.addWidget(self._modbus_retry_spin)
+        modbus_row.addSpacing(20)
+        modbus_row.addWidget(QLabel("重试间隔:"))
+        self._modbus_retry_delay_spin = _fix_height(QDoubleSpinBox())
+        self._modbus_retry_delay_spin.setRange(0.0, 5.0)
+        self._modbus_retry_delay_spin.setSingleStep(0.1)
+        self._modbus_retry_delay_spin.setDecimals(1)
+        self._modbus_retry_delay_spin.setSuffix(" 秒")
+        self._modbus_retry_delay_spin.setFixedWidth(100)
+        modbus_row.addWidget(self._modbus_retry_delay_spin)
         modbus_row.addStretch()
         sched_layout.addLayout(modbus_row)
 
         # Modbus提示
-        self._modbus_hint = QLabel("超时设为 0.5-2秒适合RS485通信，重试设为 0 表示失败直接跳过")
+        self._modbus_hint = QLabel("RS485透传建议超时 0.3-0.5 秒、重试 1 次；Modbus TCP 网关可缩短至 0.1-0.2 秒")
         self._modbus_hint.setObjectName("hintText")
         self._modbus_hint.setWordWrap(True)
         sched_layout.addWidget(self._modbus_hint)
@@ -188,6 +197,7 @@ class SchedulerPage(QWidget):
         self._interval_spin.setValue(sched.interval_seconds)
         self._modbus_timeout_spin.setValue(sched.timeout)
         self._modbus_retry_spin.setValue(sched.retry)
+        self._modbus_retry_delay_spin.setValue(sched.retry_delay)
 
         idx = self._log_level_combo.findText(log.level)
         if idx >= 0:
@@ -205,6 +215,7 @@ class SchedulerPage(QWidget):
                 "batch_read": True,
                 "timeout": self._modbus_timeout_spin.value(),
                 "retry": self._modbus_retry_spin.value(),
+                "retry_delay": self._modbus_retry_delay_spin.value(),
             },
             "logging": {
                 "level": self._log_level_combo.currentText(),

@@ -18,33 +18,6 @@ servers:
   - slave_addr: 1
     name: 计米器1
     device_type: n90sc_counter
-  - slave_addr: 2
-    name: 圆机2
-    device_type: weaving_panel
-  - slave_addr: 3
-    name: 圆机3
-    device_type: weaving_panel
-  - slave_addr: 4
-    name: 圆机4
-    device_type: weaving_panel
-  - slave_addr: 5
-    name: 圆机5
-    device_type: weaving_panel
-  - slave_addr: 6
-    name: 圆机6
-    device_type: weaving_panel
-  - slave_addr: 7
-    name: 圆机7
-    device_type: weaving_panel
-  - slave_addr: 8
-    name: 圆机8
-    device_type: weaving_panel
-  - slave_addr: 9
-    name: 圆机9
-    device_type: weaving_panel
-  - slave_addr: 10
-    name: 圆机10
-    device_type: weaving_panel
 scheduler:
   interval_seconds: 4
   batch_read: true

@@ -23,7 +23,7 @@ def setup_logger(
 
     # 日志格式
     formatter = logging.Formatter(
-        fmt="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+        fmt="%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 

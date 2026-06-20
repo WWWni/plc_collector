@@ -4,6 +4,8 @@
 支持多串口服务器架构：每台服务器独立配置 connection / serial / devices。
 """
 import os
+import uuid
+import socket
 import yaml
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -14,8 +16,7 @@ class ConnectionConfig:
     mode: str = "modbus_tcp"
     host: str = "192.168.1.200"
     port: int = 4196
-    tcp_timeout: int = 5     # TCP连接超时（秒）
-    tcp_retry: int = 3       # TCP连接重试
+    tcp_timeout: int = 1     # TCP连接超时（秒）
 
 
 @dataclass
@@ -49,8 +50,9 @@ class ServerConfig:
 class SchedulerConfig:
     interval_seconds: int = 4
     batch_read: bool = True
-    timeout: float = 1.0     # Modbus读取超时（秒）
-    retry: int = 0           # Modbus读取重试
+    timeout: float = 0.3     # Modbus读取超时（秒）
+    retry: int = 1           # Modbus读取重试
+    retry_delay: float = 0.1  # 重试前等待间隔（秒），RS485超时后短暂等待再重试
 
 
 @dataclass
@@ -79,6 +81,7 @@ class AppConfig:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     display_config: dict = field(default_factory=dict)  # {device_type: [field_def, ...]}
+    collector_id: str = ""  # 采集实例唯一标识，空则自动解析
 
     @property
     def all_devices(self) -> List[DeviceConfig]:
@@ -98,8 +101,7 @@ def _parse_connection(raw: dict) -> ConnectionConfig:
         mode=raw.get("mode", "modbus_tcp"),
         host=raw.get("host", "192.168.1.200"),
         port=raw.get("port", 4196),
-        tcp_timeout=raw.get("tcp_timeout", 5),
-        tcp_retry=raw.get("tcp_retry", 3),
+        tcp_timeout=raw.get("tcp_timeout", 1),
     )
 
 
@@ -180,8 +182,9 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         config.scheduler = SchedulerConfig(
             interval_seconds=sched.get("interval_seconds", 4),
             batch_read=sched.get("batch_read", True),
-            timeout=sched.get("timeout", 1.0),
-            retry=sched.get("retry", 0),
+            timeout=sched.get("timeout", 0.3),
+            retry=sched.get("retry", 1),
+            retry_delay=sched.get("retry_delay", 0.1),
         )
 
     # ---- 解析数据库配置 ----
@@ -213,7 +216,43 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     if "display_config" in raw and isinstance(raw["display_config"], dict):
         config.display_config = raw["display_config"]
 
+    # ---- 解析采集实例 ID ----
+    config.collector_id = _resolve_collector_id(
+        raw.get("collector_id", ""), config_path
+    )
+
     return config
+
+
+def _resolve_collector_id(configured_id: str, config_path: str) -> str:
+    """
+    解析采集实例唯一标识
+
+    优先级: config.yaml 手动配置 > collector.id 文件 > 自动生成 UUID
+    """
+    # 1. config.yaml 中手动配置
+    if configured_id and configured_id.strip():
+        return configured_id.strip()
+
+    # 2. 从 collector.id 文件读取（上次自动生成的）
+    id_file = os.path.join(os.path.dirname(os.path.abspath(config_path)), "collector.id")
+    if os.path.exists(id_file):
+        try:
+            with open(id_file, "r", encoding="utf-8") as f:
+                saved_id = f.read().strip()
+            if saved_id:
+                return saved_id
+        except Exception:
+            pass
+
+    # 3. 自动生成 UUID 并持久化
+    generated = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
+    try:
+        with open(id_file, "w", encoding="utf-8") as f:
+            f.write(generated)
+    except Exception:
+        pass
+    return generated
 
 
 def get_db_url(db_config: DatabaseConfig) -> str:

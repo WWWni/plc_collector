@@ -11,6 +11,7 @@ ZLAN5143D自动完成Modbus TCP到RTU的协议转换。
 
 import asyncio
 import logging
+import socket
 from typing import List, Optional
 
 from transport.base import TransportBase
@@ -65,17 +66,17 @@ class ModbusTcpTransport(TransportBase):
         self,
         host: str,
         port: int = 502,
-        tcp_timeout: float = 5.0,
-        tcp_retry: int = 3,
+        tcp_timeout: float = 1.0,
         modbus_timeout: float = 1.0,
         modbus_retry: int = 0,
+        modbus_retry_delay: float = 0.1,
     ):
         self._host = host
         self._port = port
         self._tcp_timeout = tcp_timeout
-        self._tcp_retry = tcp_retry
         self._modbus_timeout = modbus_timeout
         self._modbus_retry = modbus_retry
+        self._modbus_retry_delay = modbus_retry_delay
         self._client = None
         self._connected = False
 
@@ -92,10 +93,24 @@ class ModbusTcpTransport(TransportBase):
                 host=self._host,
                 port=self._port,
                 timeout=self._tcp_timeout,
-                retries=self._tcp_retry,
             )
             connected = await self._client.connect()
             if connected:
+                # TCP Keep-Alive：检测死连接
+                try:
+                    transport = getattr(self._client, "transport", None)
+                    if transport:
+                        sock = transport.get_extra_info("socket")
+                        if sock is not None:
+                            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                            if hasattr(socket, "TCP_KEEPIDLE"):
+                                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+                            if hasattr(socket, "TCP_KEEPINTVL"):
+                                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+                            if hasattr(socket, "TCP_KEEPCNT"):
+                                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+                except Exception:
+                    pass  # keep-alive 设置失败不影响连接
                 self._connected = True
                 logger.info(
                     f"Modbus TCP连接成功: {self._host}:{self._port}"
@@ -170,32 +185,44 @@ class ModbusTcpTransport(TransportBase):
                 )
 
                 if response.isError():
-                    raise RuntimeError(
-                        f"Modbus读取失败: {response}"
+                    # Modbus 应用层异常：TCP链路正常，不需要重连
+                    logger.warning(
+                        f"[从站{slave_addr}] Modbus异常响应 (第{attempt+1}/{total_attempts}次): {response}"
                     )
-
-                return list(response.registers)
+                    last_error = RuntimeError(f"Modbus异常响应: {response}")
+                else:
+                    return list(response.registers)
 
             except asyncio.TimeoutError:
-                last_error = TimeoutError(
-                    f"读取超时 ({effective_timeout}s)"
-                )
+                # RS485侧超时：TCP链路正常，不需要重连
+                last_error = TimeoutError(f"读取超时 ({effective_timeout}s)")
                 logger.warning(
-                    f"读取失败 (第{attempt+1}/{total_attempts}次): {last_error}"
+                    f"[从站{slave_addr}] 读取超时 (第{attempt+1}/{total_attempts}次): RS485侧无响应"
                 )
+            except (ConnectionError, OSError) as e:
+                # 网络层异常：TCP链路可能断开，需要重连
+                last_error = e
+                logger.warning(
+                    f"[从站{slave_addr}] 网络错误 (第{attempt+1}/{total_attempts}次): {e}"
+                )
+                if attempt < effective_retry:
+                    try:
+                        await self._reconnect()
+                    except Exception as re_err:
+                        logger.error(f"[从站{slave_addr}] 重连失败: {re_err}")
+                continue  # 网络异常重连后直接进下一轮，不走通用延迟
             except Exception as e:
                 last_error = e
                 logger.warning(
-                    f"读取失败 (第{attempt+1}/{total_attempts}次): {e}"
+                    f"[从站{slave_addr}] 读取失败 (第{attempt+1}/{total_attempts}次): {e}"
                 )
+
+            # 通用重试延迟：RS485读取失败后等待总线恢复
             if attempt < effective_retry:
-                try:
-                    await self._reconnect()
-                except Exception as re_err:
-                    logger.error(f"重连失败: {re_err}")
+                await asyncio.sleep(self._modbus_retry_delay)
 
         raise ConnectionError(
-            f"读取寄存器失败，已重试{effective_retry}次: {last_error}"
+            f"[从站{slave_addr}] 读取寄存器失败，已重试{effective_retry}次: {last_error}"
         )
 
     async def write_register(
@@ -227,28 +254,39 @@ class ModbusTcpTransport(TransportBase):
                     timeout=effective_timeout,
                 )
                 if response.isError():
-                    raise RuntimeError(f"Modbus写入失败: {response}")
-                return True
+                    logger.warning(
+                        f"[从站{slave_addr}] Modbus异常响应 (第{attempt+1}/{total_attempts}次): {response}"
+                    )
+                    last_error = RuntimeError(f"Modbus异常响应: {response}")
+                else:
+                    return True
             except asyncio.TimeoutError:
-                last_error = TimeoutError(
-                    f"写入超时 ({effective_timeout}s)"
-                )
+                last_error = TimeoutError(f"写入超时 ({effective_timeout}s)")
                 logger.warning(
-                    f"写入失败 (第{attempt+1}/{total_attempts}次): {last_error}"
+                    f"[从站{slave_addr}] 写入超时 (第{attempt+1}/{total_attempts}次): RS485侧无响应"
                 )
+            except (ConnectionError, OSError) as e:
+                last_error = e
+                logger.warning(
+                    f"[从站{slave_addr}] 网络错误 (第{attempt+1}/{total_attempts}次): {e}"
+                )
+                if attempt < effective_retry:
+                    try:
+                        await self._reconnect()
+                    except Exception as re_err:
+                        logger.error(f"[从站{slave_addr}] 重连失败: {re_err}")
+                continue
             except Exception as e:
                 last_error = e
                 logger.warning(
-                    f"写入失败 (第{attempt+1}/{total_attempts}次): {e}"
+                    f"[从站{slave_addr}] 写入失败 (第{attempt+1}/{total_attempts}次): {e}"
                 )
+
             if attempt < effective_retry:
-                try:
-                    await self._reconnect()
-                except Exception as re_err:
-                    logger.error(f"重连失败: {re_err}")
+                await asyncio.sleep(self._modbus_retry_delay)
 
         raise ConnectionError(
-            f"写入寄存器失败，已重试{effective_retry}次: {last_error}"
+            f"[从站{slave_addr}] 写入寄存器失败，已重试{effective_retry}次: {last_error}"
         )
 
     async def write_registers(
@@ -280,26 +318,37 @@ class ModbusTcpTransport(TransportBase):
                     timeout=effective_timeout,
                 )
                 if response.isError():
-                    raise RuntimeError(f"Modbus批量写入失败: {response}")
-                return True
+                    logger.warning(
+                        f"[从站{slave_addr}] Modbus异常响应 (第{attempt+1}/{total_attempts}次): {response}"
+                    )
+                    last_error = RuntimeError(f"Modbus异常响应: {response}")
+                else:
+                    return True
             except asyncio.TimeoutError:
-                last_error = TimeoutError(
-                    f"批量写入超时 ({effective_timeout}s)"
-                )
+                last_error = TimeoutError(f"批量写入超时 ({effective_timeout}s)")
                 logger.warning(
-                    f"批量写入失败 (第{attempt+1}/{total_attempts}次): {last_error}"
+                    f"[从站{slave_addr}] 写入超时 (第{attempt+1}/{total_attempts}次): RS485侧无响应"
                 )
+            except (ConnectionError, OSError) as e:
+                last_error = e
+                logger.warning(
+                    f"[从站{slave_addr}] 网络错误 (第{attempt+1}/{total_attempts}次): {e}"
+                )
+                if attempt < effective_retry:
+                    try:
+                        await self._reconnect()
+                    except Exception as re_err:
+                        logger.error(f"[从站{slave_addr}] 重连失败: {re_err}")
+                continue
             except Exception as e:
                 last_error = e
                 logger.warning(
-                    f"批量写入失败 (第{attempt+1}/{total_attempts}次): {e}"
+                    f"[从站{slave_addr}] 批量写入失败 (第{attempt+1}/{total_attempts}次): {e}"
                 )
+
             if attempt < effective_retry:
-                try:
-                    await self._reconnect()
-                except Exception as re_err:
-                    logger.error(f"重连失败: {re_err}")
+                await asyncio.sleep(self._modbus_retry_delay)
 
         raise ConnectionError(
-            f"批量写入寄存器失败，已重试{effective_retry}次: {last_error}"
+            f"[从站{slave_addr}] 批量写入寄存器失败，已重试{effective_retry}次: {last_error}"
         )

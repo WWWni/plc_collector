@@ -206,7 +206,7 @@ class DeviceEditDialog(QDialog):
 
         self._timeout_spin = QDoubleSpinBox()
         self._timeout_spin.setRange(0.0, 60.0)
-        self._timeout_spin.setSingleStep(0.5)
+        self._timeout_spin.setSingleStep(0.1)
         self._timeout_spin.setDecimals(1)
         self._timeout_spin.setSuffix(" 秒")
         self._timeout_spin.setSpecialValueText("默认")

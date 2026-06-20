@@ -10,9 +10,10 @@
 from PySide6.QtWidgets import (
     QMainWindow, QStackedWidget, QToolBar, QStatusBar, QLabel,
     QPushButton, QWidget, QHBoxLayout, QVBoxLayout, QMessageBox, QApplication,
+    QSystemTrayIcon, QMenu,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QAction, QFont
+from PySide6.QtGui import QAction, QFont, QIcon
 from datetime import datetime
 from typing import List, Optional, Callable
 
@@ -26,15 +27,18 @@ class MonitorMainWindow(QMainWindow):
 
     # Qt信号：用于从asyncio协程安全地传递数据到UI线程
     _data_signal = Signal(list)
+    # 后台初始化完成信号（线程安全）
+    _init_done_signal = Signal()
 
     def __init__(self, config, transports=None, db_manager=None,
-                 config_path="config.yaml", transport_factory=None, parent=None):
+                 config_path="config.yaml", config_dir="", transport_factory=None, parent=None):
         """
         Args:
             config: AppConfig实例
             transports: 传输层实例列表（按server_index对应config.servers）
             db_manager: 数据库管理器实例
             config_path: 配置文件路径（用于打开配置对话框）
+            config_dir: 配置文件所在目录（用于缓存文件定位）
             transport_factory: 传输层工厂函数 callable(config) -> list
         """
         super().__init__(parent)
@@ -42,11 +46,13 @@ class MonitorMainWindow(QMainWindow):
         self._transports: list = transports or []
         self._db_manager = db_manager
         self._config_path = config_path
+        self._config_dir = config_dir
         self._transport_factory = transport_factory
         self._scheduler = None
         self._round_count = 0
         self._cleanup_scheduled = False
         self._collecting = False  # 采集状态标志
+        self._really_close = False  # 真正退出标志
 
         self.setWindowTitle("PLC面板数据采集")
         self.setMinimumSize(1024, 700)
@@ -54,6 +60,20 @@ class MonitorMainWindow(QMainWindow):
 
         self._setup_ui()
         self._connect_signals()
+        self._setup_tray()
+
+        # 初始化期间禁用操作按钮
+        self._start_btn.setEnabled(False)
+        self._test_btn.setEnabled(False)
+        self._config_btn.setEnabled(False)
+        self._conn_label.setText("● 正在初始化...")
+        self._conn_label.setStyleSheet(
+            f"color: {COLORS['accent_yellow']}; font-weight: bold; "
+            f"font-size: 13px; padding: 0 8px;"
+        )
+
+        # 界面显示后延迟触发后台初始化
+        QTimer.singleShot(100, self._on_init_ready)
 
     def _setup_ui(self):
         # ---- 顶部工具栏 ----
@@ -238,6 +258,137 @@ class MonitorMainWindow(QMainWindow):
     def _connect_signals(self):
         """连接信号"""
         self._data_signal.connect(self._on_data_received)
+        self._init_done_signal.connect(self._on_init_done)
+
+    def _setup_tray(self):
+        """设置系统托盘图标"""
+        import os
+        icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), "favicon.ico")
+        app_icon = QIcon(icon_path) if os.path.exists(icon_path) else QIcon()
+
+        self.setWindowIcon(app_icon)
+
+        self._tray_icon = QSystemTrayIcon(self)
+        self._tray_icon.setIcon(app_icon)
+        self._tray_icon.setToolTip("PLC面板数据采集")
+
+        # 托盘右键菜单
+        tray_menu = QMenu()
+        tray_menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {COLORS['bg_secondary']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border']};
+            }}
+            QMenu::item:selected {{
+                background-color: {COLORS['accent_blue']};
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background: {COLORS['border']};
+                margin: 4px 8px;
+            }}
+        """)
+        show_action = QAction("显示主窗口", self)
+        show_action.triggered.connect(self._tray_restore)
+        tray_menu.addAction(show_action)
+
+        tray_menu.addSeparator()
+
+        quit_action = QAction("退出", self)
+        quit_action.triggered.connect(self._tray_quit)
+        tray_menu.addAction(quit_action)
+
+        self._tray_icon.setContextMenu(tray_menu)
+        self._tray_icon.activated.connect(self._on_tray_activated)
+        self._tray_icon.show()
+
+    def _on_tray_activated(self, reason):
+        """托盘图标双击时恢复窗口"""
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._tray_restore()
+
+    def _tray_restore(self):
+        """从托盘恢复窗口"""
+        self.showNormal()
+        self.activateWindow()
+        self.raise_()
+
+    def _tray_quit(self):
+        """真正退出程序"""
+        self._really_close = True
+        self._tray_icon.hide()
+        self.close()
+        QApplication.quit()
+
+    def closeEvent(self, event):
+        """重写关闭事件：点 X 最小化到托盘而非退出"""
+        if self._really_close:
+            self._tray_icon.hide()
+            event.accept()
+        else:
+            event.ignore()
+            self.hide()
+            self._tray_icon.showMessage(
+                "PLC面板数据采集",
+                "程序已最小化到系统托盘，双击托盘图标可恢复窗口。",
+                QSystemTrayIcon.MessageIcon.Information,
+                2000,
+            )
+
+    def _on_init_ready(self):
+        """界面显示后启动后台线程做数据库初始化"""
+        import threading
+        t = threading.Thread(target=self._do_bg_init, daemon=True)
+        t.start()
+        # 安全兜底：60 秒后如果初始化还没完成，强制启用按钮
+        QTimer.singleShot(60000, self._on_init_done)
+
+    def _do_bg_init(self):
+        """后台线程：数据库连接 + 设备类型加载"""
+        import logging
+        logger = logging.getLogger("plc_collector.app")
+
+        try:
+            from storage.db_manager import DatabaseManager
+            from protocol.device_types import (
+                load_from_db as load_device_types_from_db,
+                save_cache,
+            )
+            self._db_manager = DatabaseManager(
+                self._config.database, collector_id=self._config.collector_id
+            )
+            self._db_manager.initialize()
+            n = load_device_types_from_db(self._db_manager.session_factory)
+            if n > 0:
+                save_cache(self._config_dir)
+            logger.info(f"数据库初始化成功，从DB加载 {n} 个设备类型定义")
+        except Exception as e:
+            logger.warning(f"数据库初始化失败，尝试从本地缓存加载: {e}")
+            from protocol.device_types import load_cache
+            n = load_cache(self._config_dir)
+            if n > 0:
+                logger.info(f"从缓存恢复 {n} 个设备类型定义")
+            else:
+                logger.warning("无可用缓存，程序将以无设备类型模式运行")
+            self._db_manager = None
+
+        # 通过信号通知主线程更新 UI（线程安全）
+        self._init_done_signal.emit()
+
+    def _on_init_done(self):
+        """后台初始化完成，在主线程中启用按钮（可被多次调用，幂等）"""
+        if self._start_btn.isEnabled():
+            return  # 已经启用过，跳过
+        self._start_btn.setEnabled(True)
+        self._test_btn.setEnabled(True)
+        self._config_btn.setEnabled(True)
+        self._conn_label.setText("● 未连接")
+        self._conn_label.setStyleSheet(
+            f"color: {COLORS['status_offline']}; font-weight: bold; "
+            f"font-size: 13px; padding: 0 8px;"
+        )
 
     def _update_clock(self):
         """更新时钟显示"""
@@ -302,7 +453,7 @@ class MonitorMainWindow(QMainWindow):
         if self._db_manager is None:
             try:
                 from storage.db_manager import DatabaseManager
-                db_manager = DatabaseManager(self._config.database)
+                db_manager = DatabaseManager(self._config.database, collector_id=self._config.collector_id)
                 db_manager.initialize()
                 self._db_manager = db_manager
                 # 从数据库加载设备类型定义到内存注册表
@@ -355,6 +506,7 @@ class MonitorMainWindow(QMainWindow):
                     f"color: {COLORS['status_fault']}; font-weight: bold; "
                     f"font-size: 13px; padding: 0 8px;"
                 )
+                self._collecting = False  # 标记启动失败，_do_start 会恢复按钮
                 return
 
             # 更新连接状态显示
@@ -384,6 +536,7 @@ class MonitorMainWindow(QMainWindow):
                 f"color: {COLORS['status_fault']}; font-weight: bold; "
                 f"font-size: 13px; padding: 0 8px;"
             )
+            self._collecting = False  # 标记启动失败，_do_start 会恢复按钮
             QMessageBox.critical(self, "连接失败", str(e))
 
     async def stop_collecting(self):
@@ -412,13 +565,55 @@ class MonitorMainWindow(QMainWindow):
         # 恢复连接测试按钮
         self._test_btn.setEnabled(True)
 
+    def _set_btn_start(self):
+        """将按钮恢复为'开始采集'就绪状态"""
+        self._collecting = False
+        self._start_btn.setEnabled(True)
+        self._start_btn.setText("▶ 开始采集")
+        self._start_btn.setObjectName("primaryBtn")
+        self._start_btn.style().unpolish(self._start_btn)
+        self._start_btn.style().polish(self._start_btn)
+
     def _toggle_collect(self):
-        """切换开始/停止采集"""
+        """切换开始/停止采集（点击后立即禁用按钮，异步完成后恢复）"""
         import asyncio
+
         if self._collecting:
-            asyncio.ensure_future(self.stop_collecting())
+            # 立即显示 loading 状态，防止重复点击
+            self._start_btn.setEnabled(False)
+            self._start_btn.setText("⏳ 正在停止…")
+            self._start_btn.setObjectName("secondaryBtn")
+            self._start_btn.style().unpolish(self._start_btn)
+            self._start_btn.style().polish(self._start_btn)
+            asyncio.ensure_future(self._do_stop())
         else:
-            asyncio.ensure_future(self.start_collecting())
+            # 立即显示 loading 状态
+            self._start_btn.setEnabled(False)
+            self._start_btn.setText("⏳ 正在启动…")
+            self._start_btn.setObjectName("secondaryBtn")
+            self._start_btn.style().unpolish(self._start_btn)
+            self._start_btn.style().polish(self._start_btn)
+            asyncio.ensure_future(self._do_start())
+
+    async def _do_stop(self):
+        """异步停止采集，完成后恢复按钮为'开始采集'"""
+        try:
+            await self.stop_collecting()
+        finally:
+            # stop_collecting 已重置 _collecting=False 和按钮文本，这里只需确保按钮可用
+            self._start_btn.setEnabled(True)
+
+    async def _do_start(self):
+        """异步启动采集，若失败则恢复按钮为'开始采集'"""
+        try:
+            await self.start_collecting()
+        finally:
+            # 若启动失败（_collecting 仍为 False），恢复为开始状态
+            if not self._collecting:
+                self._set_btn_start()
+            else:
+                # 启动成功，确保按钮可用（stop_collecting 内部已设置文本和样式）
+                self._start_btn.setEnabled(True)
 
     def _on_test_connection(self):
         """点击连接测试按钮"""
@@ -606,7 +801,13 @@ class MonitorMainWindow(QMainWindow):
 
     async def _stop_and_open_config(self):
         """停止采集后打开配置"""
-        await self.stop_collecting()
+        self._config_btn.setText("⏳ 停止中...")
+        self._config_btn.setEnabled(False)
+        try:
+            await self.stop_collecting()
+        finally:
+            self._config_btn.setEnabled(True)
+            self._config_btn.setText("⚙ 配置")
         self._do_open_config()
 
     def _do_open_config(self):

@@ -8,6 +8,8 @@ __pycache__/
 venv/
 .venv/
 env/
+my_env/
+
 
 # PyInstaller 构建产物
 build/
@@ -29,5 +31,8 @@ Thumbs.db
 desktop.ini
 .DS_Store
 
-# 配置（含数据库密码等敏感信息）
-config.yaml
+# 图标
+favicon.ico
+
+# 配置（）
+collector.id

@@ -33,14 +33,13 @@ class _ServerData:
     """单台服务器的GUI数据模型"""
 
     def __init__(self, name="串口服务器1", mode="modbus_tcp",
-                 host="192.168.1.200", port=4196, tcp_timeout=5, tcp_retry=3,
+                 host="192.168.1.200", port=4196, tcp_timeout=1,
                  baudrate=9600, data_bits=8, stop_bits=1, parity="none"):
         self.name = name
         self.mode = mode
         self.host = host
         self.port = port
         self.tcp_timeout = tcp_timeout
-        self.tcp_retry = tcp_retry
         self.baudrate = baudrate
         self.data_bits = data_bits
         self.stop_bits = stop_bits
@@ -54,7 +53,6 @@ class _ServerData:
                 "host": self.host,
                 "port": self.port,
                 "tcp_timeout": self.tcp_timeout,
-                "tcp_retry": self.tcp_retry,
             },
             "serial": {
                 "baudrate": self.baudrate,
@@ -215,11 +213,6 @@ class ServersPage(QWidget):
         self._timeout_spin.setRange(1, 60)
         self._timeout_spin.setSuffix(" 秒")
         net_layout.addRow("TCP连接超时:", self._timeout_spin)
-
-        self._retry_spin = _fix_height(QSpinBox())
-        self._retry_spin.setRange(0, 10)
-        self._retry_spin.setSuffix(" 次")
-        net_layout.addRow("TCP连接重试:", self._retry_spin)
         form_outer.addWidget(net_group)
 
         # ---- 串口参数区 ----
@@ -331,7 +324,6 @@ class ServersPage(QWidget):
         self._host_edit.setText(srv.host)
         self._port_spin.setValue(srv.port)
         self._timeout_spin.setValue(srv.tcp_timeout)
-        self._retry_spin.setValue(srv.tcp_retry)
 
         self._on_mode_changed(srv.mode)  # 更新提示文字
 
@@ -398,7 +390,6 @@ class ServersPage(QWidget):
                 host=srv_cfg.connection.host,
                 port=srv_cfg.connection.port,
                 tcp_timeout=srv_cfg.connection.tcp_timeout,
-                tcp_retry=srv_cfg.connection.tcp_retry,
                 baudrate=srv_cfg.serial.baudrate,
                 data_bits=srv_cfg.serial.data_bits,
                 stop_bits=srv_cfg.serial.stop_bits,
@@ -422,7 +413,6 @@ class ServersPage(QWidget):
             srv.host = self._host_edit.text().strip()
             srv.port = self._port_spin.value()
             srv.tcp_timeout = self._timeout_spin.value()
-            srv.tcp_retry = self._retry_spin.value()
             srv.baudrate = int(self._baud_combo.currentText())
             srv.data_bits = int(self._databits_combo.currentText())
             srv.stop_bits = int(self._stopbits_combo.currentText())

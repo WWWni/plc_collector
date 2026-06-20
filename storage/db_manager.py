@@ -24,8 +24,9 @@ logger = logging.getLogger("plc_collector.storage.db")
 class DatabaseManager:
     """数据库管理器（统一 plc_data 表）"""
 
-    def __init__(self, db_config: DatabaseConfig):
+    def __init__(self, db_config: DatabaseConfig, collector_id: str = ""):
         self._config = db_config
+        self._collector_id = collector_id
         self._engine = None
         self._session_factory = None
 
@@ -102,6 +103,7 @@ class DatabaseManager:
 
                 record = PlcData(
                     timestamp=data.get("timestamp", datetime.now()),
+                    collector_id=self._collector_id,
                     server_index=data.get("server_index", 0),
                     slave_addr=data.get("slave_addr", 0),
                     device_name=data.get("device_name", ""),
@@ -151,17 +153,22 @@ class DatabaseManager:
             session.close()
 
     def query_fault_events(self, limit: int = 200) -> List[dict]:
-        """查询故障事件（从 fault_log 字段解析）"""
+        """查询故障事件（从 fault_log 字段解析，按 collector_id 过滤）"""
         if not self._session_factory:
             return []
 
         session = self._session_factory()
         try:
-            rows = (
+            query = (
                 session.query(PlcData.fault_log, PlcData.timestamp,
                               PlcData.slave_addr, PlcData.device_name)
                 .filter(PlcData.fault_log.isnot(None))
                 .filter(PlcData.fault_log != "")
+            )
+            if self._collector_id:
+                query = query.filter(PlcData.collector_id == self._collector_id)
+            rows = (
+                query
                 .order_by(PlcData.timestamp.desc())
                 .limit(500)
                 .all()

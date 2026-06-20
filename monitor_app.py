@@ -35,6 +35,7 @@ def create_transports(config):
     # 从 scheduler 获取全局 Modbus 超时/重试
     modbus_timeout = config.scheduler.timeout
     modbus_retry = config.scheduler.retry
+    modbus_retry_delay = config.scheduler.retry_delay
 
     transports = []
     for srv in config.servers:
@@ -44,7 +45,6 @@ def create_transports(config):
                 host=srv.connection.host,
                 port=srv.connection.port,
                 tcp_timeout=srv.connection.tcp_timeout,
-                tcp_retry=srv.connection.tcp_retry,
                 modbus_timeout=modbus_timeout,
                 modbus_retry=modbus_retry,
             )
@@ -53,9 +53,9 @@ def create_transports(config):
                 host=srv.connection.host,
                 port=srv.connection.port or 502,
                 tcp_timeout=srv.connection.tcp_timeout,
-                tcp_retry=srv.connection.tcp_retry,
                 modbus_timeout=modbus_timeout,
                 modbus_retry=modbus_retry,
+                modbus_retry_delay=modbus_retry_delay,
             )
         else:
             raise ValueError(f"不支持的连接模式: {mode}")
@@ -93,6 +93,21 @@ def main():
     )
     args = parser.parse_args()
 
+    # 单实例检测：如果已有实例在运行，前置已有窗口后退出
+    import ctypes
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "PLC_Collector_Single_Instance")
+    last_error = ctypes.windll.kernel32.GetLastError()
+    if last_error == 183:  # ERROR_ALREADY_EXISTS
+        # 查找已有窗口并前置
+        import ctypes.wintypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, "PLC面板数据采集")
+        if hwnd:
+            SW_RESTORE = 9
+            user32.ShowWindow(hwnd, SW_RESTORE)
+            user32.SetForegroundWindow(hwnd)
+        sys.exit(0)
+
     # 加载配置
     from config_loader import load_config
     try:
@@ -113,45 +128,23 @@ def main():
         backup_count=config.logging.backup_count,
     )
 
-    # 尽早初始化数据库并加载设备类型定义（确保配置UI能看到DB中的设备类型）
-    db_manager = None
-    config_dir = os.path.dirname(os.path.abspath(args.config))
-    try:
-        from storage.db_manager import DatabaseManager
-        from protocol.device_types import (
-            load_from_db as load_device_types_from_db,
-            save_cache,
-        )
-        db_manager = DatabaseManager(config.database)
-        db_manager.initialize()
-        n = load_device_types_from_db(db_manager.session_factory)
-        if n > 0:
-            save_cache(config_dir)
-        logger.info(f"数据库初始化成功，从DB加载 {n} 个设备类型定义")
-    except Exception as e:
-        logger.warning(f"数据库初始化失败，尝试从本地缓存加载: {e}")
-        from protocol.device_types import load_cache
-        n = load_cache(config_dir)
-        if n > 0:
-            logger.info(f"从缓存恢复 {n} 个设备类型定义")
-        else:
-            logger.warning("无可用缓存，程序将以无设备类型模式运行")
-        db_manager = None
-
     # 初始化Qt + asyncio混合事件循环
     from gui.shared.async_bridge import setup_async_qt
     from gui.shared.styles import MAIN_STYLE
 
     app, loop = setup_async_qt()
+    app.setQuitOnLastWindowClosed(False)  # 最小化到托盘时不退出
     app.setStyleSheet(MAIN_STYLE)
 
-    # 立即创建并显示主窗口（传输层和数据库延迟初始化）
+    # 立即创建并显示主窗口（数据库延迟初始化）
+    config_dir = os.path.dirname(os.path.abspath(args.config))
     from gui.monitor.main_window import MonitorMainWindow
     window = MonitorMainWindow(
         config=config,
         transports=[],
-        db_manager=db_manager,
+        db_manager=None,
         config_path=args.config,
+        config_dir=config_dir,
         transport_factory=create_transports,
     )
     window.show()

@@ -8,12 +8,13 @@ echo.
 set APP_DIR=PLC_Collector
 
 echo [1/3] Cleaning old build...
-if exist "dist\%APP_DIR%" rmdir /s /q "dist\%APP_DIR%"
-if exist build rmdir /s /q build
+if exist "%~dp0dist\%APP_DIR%" rmdir /s /q "%~dp0dist\%APP_DIR%"
+if exist "%~dp0build" rmdir /s /q "%~dp0build"
 echo.
 
-echo [2/3] Building unified app...
-pyinstaller monitor_app.spec --noconfirm
+echo [2/3] Building unified app (using venv)...
+call "%~dp0my_env\Scripts\activate.bat"
+pyinstaller "%~dp0monitor_app.spec" --clean --noconfirm
 if %errorlevel% neq 0 (
     echo Build FAILED!
     pause
@@ -22,7 +23,7 @@ if %errorlevel% neq 0 (
 echo.
 
 echo [3/3] Copying config file...
-copy /Y config.yaml "dist\%APP_DIR%\"
+copy /Y "%~dp0config.yaml" "%~dp0dist\%APP_DIR%\"
 echo.
 
 echo ============================================================

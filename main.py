@@ -30,7 +30,7 @@ from storage.db_manager import DatabaseManager
 from protocol.device_types import load_from_db as load_device_types_from_db
 
 
-def create_transport_for_server(server: ServerConfig, modbus_timeout: float, modbus_retry: int) -> TransportBase:
+def create_transport_for_server(server: ServerConfig, modbus_timeout: float, modbus_retry: int, modbus_retry_delay: float = 0.1) -> TransportBase:
     """根据单台服务器配置创建对应的传输层实例"""
     mode = server.connection.mode
 
@@ -39,7 +39,6 @@ def create_transport_for_server(server: ServerConfig, modbus_timeout: float, mod
             host=server.connection.host,
             port=server.connection.port,
             tcp_timeout=server.connection.tcp_timeout,
-            tcp_retry=server.connection.tcp_retry,
             modbus_timeout=modbus_timeout,
             modbus_retry=modbus_retry,
         )
@@ -48,9 +47,9 @@ def create_transport_for_server(server: ServerConfig, modbus_timeout: float, mod
             host=server.connection.host,
             port=server.connection.port or 502,
             tcp_timeout=server.connection.tcp_timeout,
-            tcp_retry=server.connection.tcp_retry,
             modbus_timeout=modbus_timeout,
             modbus_retry=modbus_retry,
+            modbus_retry_delay=modbus_retry_delay,
         )
     else:
         raise ValueError(f"不支持的连接模式: {mode}")
@@ -134,10 +133,11 @@ async def run(config: AppConfig, test_mode: bool = False, config_dir: str = None
     # 为每台服务器创建独立的传输层
     modbus_timeout = config.scheduler.timeout
     modbus_retry = config.scheduler.retry
+    modbus_retry_delay = config.scheduler.retry_delay
     transports: List[TransportBase] = []
     for srv in config.servers:
         try:
-            t = create_transport_for_server(srv, modbus_timeout, modbus_retry)
+            t = create_transport_for_server(srv, modbus_timeout, modbus_retry, modbus_retry_delay)
             transports.append(t)
         except Exception as e:
             print(f"  传输层创建失败 [{srv.name}]: {e}")
@@ -146,7 +146,7 @@ async def run(config: AppConfig, test_mode: bool = False, config_dir: str = None
     # 创建数据库管理器（非测试模式）
     db_manager = None
     if not test_mode:
-        db_manager = DatabaseManager(config.database)
+        db_manager = DatabaseManager(config.database, collector_id=config.collector_id)
         try:
             db_manager.initialize()
             print(f"  数据库连接成功: {config.database.engine}://{config.database.host}/{config.database.database}")
