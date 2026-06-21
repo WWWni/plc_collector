@@ -206,6 +206,22 @@ plc_collector/
 
 历史数据保留 30 天，通过 `DROP PARTITION` 瞬间完成清理。
 
+### device_registry（设备注册表）
+
+记录所有曾经采集过的设备，`batch_insert` 时自动注册新设备、更新 `last_seen`。
+
+| 字段 | 说明 |
+|------|------|
+| `device_name` | 设备名称 |
+| `device_type` | 设备类型标识 |
+| `slave_addr` | 从站地址 |
+| `collector_id` | 工控机标识 |
+| `server_index` | 串口服务器索引 |
+| `first_seen` | 首次采集时间 |
+| `last_seen` | 最近采集时间 |
+
+唯一约束：`collector_id` + `slave_addr` 组合唯一。
+
 ## 打包发布
 
 提供两种打包方式，输出目录互相隔离：
@@ -234,7 +250,7 @@ build_pyinstaller.bat
 
 ## 添加新设备类型（plc-device-import）
 
-本系统通过 **设备类型注册表** 驱动采集，新增设备类型无需修改代码。项目内置了 `plc-device-import` AI Skill（`plc-device-import.skill` + `plc-device-import/SKILL.md`），可在 Qoder、Claude Code、Codex、Hermes、OpenCode 等 AI 编程工具中通过斜杠命令或手动引用调用，自动完成从协议文档到数据库记录的全流程。
+本系统通过 **设备类型注册表** 驱动采集，新增设备类型无需修改代码。项目内置了 `plc-device-import` AI Skill（`plc-device-import.skill` + `plc-device-import/SKILL.md`），可在 Claude Code、Codex、Hermes、OpenCode、Qoder 等 AI 编程工具中通过斜杠命令或手动引用调用，自动完成从协议文档到数据库记录的全流程。
 
 ### 何时使用
 
