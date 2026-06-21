@@ -234,7 +234,7 @@ build_pyinstaller.bat
 
 ## 添加新设备类型（plc-device-import）
 
-本系统通过 **设备类型注册表** 驱动采集，新增设备类型无需修改代码。项目内置了 `plc-device-import` AI Skill，可在 Qoder 中通过 `/plc-device-import` 命令调用，自动完成从协议文档到数据库记录的全流程。
+本系统通过 **设备类型注册表** 驱动采集，新增设备类型无需修改代码。项目内置了 `plc-device-import` AI Skill（`plc-device-import.skill` + `plc-device-import/SKILL.md`），可在 Qoder、Claude Code、Codex、Hermes、OpenCode 等 AI 编程工具中通过斜杠命令或手动引用调用，自动完成从协议文档到数据库记录的全流程。
 
 ### 何时使用
 
@@ -245,7 +245,7 @@ build_pyinstaller.bat
 ### 使用方法
 
 1. 准备好设备的 Modbus 协议文档（PDF / 图片 / 文本均可）
-2. 在 Qoder 中输入 `/plc-device-import`，将协议文档提供给 AI
+2. 在 AI 编程工具中输入 `/plc-device-import` 或将 `plc-device-import/SKILL.md` 提供给 AI，附上协议文档
 3. Skill 自动完成以下流程：
 
 ```
