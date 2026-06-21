@@ -224,6 +224,49 @@ build_pyinstaller.bat
 | 打包工具 | Nuitka（MSVC 14.5）/ PyInstaller |
 | 运行平台 | Windows（x86_64） |
 
+## 添加新设备类型（plc-device-import）
+
+本系统通过 **设备类型注册表** 驱动采集，新增设备类型无需修改代码，只需向数据库 `device_type_def` 表写入一条 JSON 定义即可。
+
+项目内置了 `plc-device-import` AI Skill（`plc-device-import.skill`），可在 Qoder 中通过斜杠命令 `/plc-device-import` 调用，自动完成从协议文档到数据库记录的全流程。
+
+### 何时使用
+
+- 接入一台新类型的 Modbus 设备（圆机、计米器、温控器等）
+- 拿到设备厂家的协议文档，需要解析寄存器映射
+- 需要调整已有设备的寄存器地址或解析规则
+
+### 使用方法
+
+1. 准备好设备的 Modbus 协议文档（PDF / 图片 / 文本均可）
+2. 在 Qoder 中输入 `/plc-device-import`，将协议文档提供给 AI
+3. Skill 自动完成以下流程：
+
+```
+读取协议文档 → 提取寄存器表 → 构建 device_type_def JSON → 验证 → 写入数据库
+```
+
+4. 写入后采集程序自动从数据库加载新定义，无需重启
+
+### 定义结构概览
+
+每条设备类型定义包含以下核心部分：
+
+| 字段 | 作用 |
+|------|------|
+| `device_type` | 唯一标识（如 `n90sc_counter`） |
+| `read_mode` | 寄存器读取模式：`contiguous`（连续）或 `grouped`（分组） |
+| `registers` | 寄存器地址表（地址、名称、索引） |
+| `parse_rules` | 解析规则（direct / combine32 / scale / bitfield / value_map 等 8 种操作） |
+| `bit_fields` | 位域批量解析（一个寄存器的各 bit 含义） |
+| `run_mode_rules` | 运行模式判断规则 |
+| `fault_names` | 故障名称映射 |
+| `display_fields` | 仪表板默认展示字段（最多 4 个） |
+| `status_map` | 状态颜色/文字映射 |
+| `value_mappings` | 枚举值映射表 |
+
+完整的字段说明和两个参考示例（圆机面板 + N90SC 计米器）见 [`plc-device-import/examples.md`](plc-device-import/examples.md)。
+
 ## 许可证
 
 [MIT License](LICENSE)
