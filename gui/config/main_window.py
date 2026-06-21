@@ -66,7 +66,7 @@ class ConfigMainWindow(QDialog):
 
         self.setWindowTitle("PLC数据采集 — 配置管理")
         self.setMinimumSize(900, 650)
-        self.resize(1050, 720)
+        self.resize(1000, 680)
 
         self._setup_ui()
 

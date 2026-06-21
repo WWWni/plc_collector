@@ -16,6 +16,7 @@ build/
 dist/
 *.spec
 
+
 # 日志
 logs/
 *.log
@@ -36,3 +37,6 @@ favicon.ico
 
 # 配置（）
 collector.id
+
+# 其他
+nuitka-crash-report.xml

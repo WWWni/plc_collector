@@ -91,21 +91,26 @@ def main():
         action="store_true",
         help="模拟模式: 生成随机测试数据，无需连接真实设备",
     )
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="开机自启模式: 隐藏窗口到托盘，初始化完成后自动开始采集",
+    )
     args = parser.parse_args()
 
-    # 单实例检测：如果已有实例在运行，前置已有窗口后退出
+    # 单实例检测：如果已有实例在运行，通知已有窗口恢复后退出
     import ctypes
+    import ctypes.wintypes
     mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "PLC_Collector_Single_Instance")
     last_error = ctypes.windll.kernel32.GetLastError()
     if last_error == 183:  # ERROR_ALREADY_EXISTS
-        # 查找已有窗口并前置
-        import ctypes.wintypes
         user32 = ctypes.windll.user32
-        hwnd = user32.FindWindowW(None, "PLC面板数据采集")
+        # 注册与主窗口约定的自定义消息（跨进程通信）
+        WM_RESTORE = user32.RegisterWindowMessageW("PLC_Collector_RestoreWindow")
+        # 按类名查找后台监听窗口（主窗口隐藏时仍可达）
+        hwnd = user32.FindWindowW("PLC_Collector_Listener", None)
         if hwnd:
-            SW_RESTORE = 9
-            user32.ShowWindow(hwnd, SW_RESTORE)
-            user32.SetForegroundWindow(hwnd)
+            user32.PostMessageW(hwnd, WM_RESTORE, 0, 0)
         sys.exit(0)
 
     # 加载配置
@@ -145,7 +150,10 @@ def main():
     app.setQuitOnLastWindowClosed(False)  # 最小化到托盘时不退出
     app.setStyleSheet(MAIN_STYLE)
 
-    # 立即创建并显示主窗口（数据库延迟初始化）
+    # 判断是否为自启模式（仅通过命令行 --auto 参数判断）
+    is_auto_start = args.auto
+
+    # 创建主窗口（数据库延迟初始化）
     from gui.monitor.main_window import MonitorMainWindow
     window = MonitorMainWindow(
         config=config,
@@ -154,8 +162,12 @@ def main():
         config_path=args.config,
         config_dir=config_dir,
         transport_factory=create_transports,
+        auto_start=is_auto_start,
     )
-    window.show()
+    if is_auto_start:
+        window.hide()  # 自启模式：直接隐藏到托盘
+    else:
+        window.show()
 
     # 启动事件循环（模拟模式自动启动，正常模式等待用户操作）
     with loop:

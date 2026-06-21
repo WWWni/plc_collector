@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QAction, QFont, QIcon
+import sys
 from datetime import datetime
 from typing import List, Optional, Callable
 
@@ -29,9 +30,12 @@ class MonitorMainWindow(QMainWindow):
     _data_signal = Signal(list)
     # 后台初始化完成信号（线程安全）
     _init_done_signal = Signal()
+    # 单实例恢复信号（从后台 Win32 监听线程触发）
+    _restore_signal = Signal()
 
     def __init__(self, config, transports=None, db_manager=None,
-                 config_path="config.yaml", config_dir="", transport_factory=None, parent=None):
+                 config_path="config.yaml", config_dir="", transport_factory=None,
+                 auto_start=False, parent=None):
         """
         Args:
             config: AppConfig实例
@@ -40,6 +44,7 @@ class MonitorMainWindow(QMainWindow):
             config_path: 配置文件路径（用于打开配置对话框）
             config_dir: 配置文件所在目录（用于缓存文件定位）
             transport_factory: 传输层工厂函数 callable(config) -> list
+            auto_start: 开机自启模式，初始化完成后自动开始采集
         """
         super().__init__(parent)
         self._config = config
@@ -48,6 +53,7 @@ class MonitorMainWindow(QMainWindow):
         self._config_path = config_path
         self._config_dir = config_dir
         self._transport_factory = transport_factory
+        self._auto_start = auto_start
         self._scheduler = None
         self._round_count = 0
         self._cleanup_scheduled = False
@@ -55,12 +61,17 @@ class MonitorMainWindow(QMainWindow):
         self._really_close = False  # 真正退出标志
 
         self.setWindowTitle("PLC面板数据采集")
-        self.setMinimumSize(1024, 700)
-        self.resize(1400, 850)
+        self.setMinimumSize(900, 650)
+        self.resize(1000, 680)
 
         self._setup_ui()
         self._connect_signals()
         self._setup_tray()
+
+        # 单实例恢复：启动后台 Win32 监听窗口（不受 Qt hide() 影响）
+        if sys.platform == "win32":
+            self._restore_signal.connect(self._tray_restore)
+            self._start_restore_listener()
 
         # 初始化期间禁用操作按钮
         self._start_btn.setEnabled(False)
@@ -310,10 +321,98 @@ class MonitorMainWindow(QMainWindow):
             self._tray_restore()
 
     def _tray_restore(self):
-        """从托盘恢复窗口"""
+        """从托盘或任务栏恢复窗口到前台"""
         self.showNormal()
         self.activateWindow()
         self.raise_()
+        if sys.platform == "win32":
+            import ctypes
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            hwnd = int(self.winId())
+            # AttachThreadInput 绕过 Windows 前台窗口限制：
+            # 将当前线程挂接到当前拥有焦点的线程，临时获取 SetForegroundWindow 权限
+            fore_hwnd = user32.GetForegroundWindow()
+            fore_tid = user32.GetWindowThreadProcessId(fore_hwnd, None)
+            cur_tid = kernel32.GetCurrentThreadId()
+            if fore_tid != cur_tid:
+                user32.AttachThreadInput(cur_tid, fore_tid, True)
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            if fore_tid != cur_tid:
+                user32.AttachThreadInput(cur_tid, fore_tid, False)
+
+    def _start_restore_listener(self):
+        """启动后台 Win32 窗口监听单实例恢复消息
+
+        Qt hide() 后 nativeEvent 不再接收消息，因此创建一个独立的
+        Win32 隐藏窗口在后台线程运行消息循环，收到恢复消息后通过 Qt Signal
+        安全地通知主线程恢复窗口。
+        """
+        import ctypes
+        import ctypes.wintypes
+        import threading
+
+        WNDPROC = ctypes.WINFUNCTYPE(
+            ctypes.c_long, ctypes.wintypes.HWND, ctypes.c_uint,
+            ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM,
+        )
+
+        wm_restore = ctypes.windll.user32.RegisterWindowMessageW(
+            "PLC_Collector_RestoreWindow"
+        )
+        signal = self._restore_signal  # 捕获到闭包
+
+        @WNDPROC
+        def _wnd_proc(hwnd, msg, wparam, lparam):
+            if msg == wm_restore:
+                signal.emit()
+                return 0
+            return ctypes.windll.user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+        # 防止回调被 GC 回收
+        self._wnd_proc_ref = _wnd_proc
+
+        def _listener_thread():
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+
+            class WNDCLASSW(ctypes.Structure):
+                _fields_ = [
+                    ("style", ctypes.c_uint),
+                    ("lpfnWndProc", WNDPROC),
+                    ("cbClsExtra", ctypes.c_int),
+                    ("cbWndExtra", ctypes.c_int),
+                    ("hInstance", ctypes.wintypes.HINSTANCE),
+                    ("hIcon", ctypes.wintypes.HICON),
+                    ("hCursor", ctypes.wintypes.HANDLE),
+                    ("hbrBackground", ctypes.wintypes.HBRUSH),
+                    ("lpszMenuName", ctypes.wintypes.LPCWSTR),
+                    ("lpszClassName", ctypes.wintypes.LPCWSTR),
+                ]
+
+            hinstance = kernel32.GetModuleHandleW(None)
+            class_name = "PLC_Collector_Listener"
+
+            wc = WNDCLASSW()
+            wc.lpfnWndProc = _wnd_proc
+            wc.hInstance = hinstance
+            wc.lpszClassName = class_name
+            user32.RegisterClassW(ctypes.byref(wc))
+
+            hwnd = user32.CreateWindowExW(
+                0, class_name, "PLC Listener",
+                0, 0, 0, 0, 0,
+                None, None, hinstance, None,
+            )
+
+            msg = ctypes.wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+
+        t = threading.Thread(target=_listener_thread, daemon=True)
+        t.start()
 
     def _tray_quit(self):
         """真正退出程序"""
@@ -322,20 +421,48 @@ class MonitorMainWindow(QMainWindow):
         self.close()
         QApplication.quit()
 
+    def nativeEvent(self, eventType, message):
+        """拦截 WM_CLOSE 消息：点 X 时转为最小化到托盘，Qt 不会收到 closeEvent"""
+        if eventType == b"windows_generic_MSG":
+            import ctypes.wintypes
+            msg = ctypes.wintypes.MSG.from_address(message.__int__())
+            if msg.message == 0x0010:  # WM_CLOSE
+                if self._really_close:
+                    return super().nativeEvent(eventType, message)
+                else:
+                    # 标记本次最小化需要隐藏到托盘
+                    self._minimize_to_tray = True
+                    self.showMinimized()
+                    return True, 0
+        return super().nativeEvent(eventType, message)
+
     def closeEvent(self, event):
-        """重写关闭事件：点 X 最小化到托盘而非退出"""
+        """仅在 _tray_quit 调用 self.close() 时触发（真正退出）"""
         if self._really_close:
             self._tray_icon.hide()
             event.accept()
         else:
             event.ignore()
-            self.hide()
-            self._tray_icon.showMessage(
-                "PLC面板数据采集",
-                "程序已最小化到系统托盘，双击托盘图标可恢复窗口。",
-                QSystemTrayIcon.MessageIcon.Information,
-                2000,
-            )
+
+    def changeEvent(self, event):
+        """监听窗口状态变化"""
+        super().changeEvent(event)
+        if event.type() == event.Type.WindowStateChange:
+            if self.windowState() & Qt.WindowState.WindowMinimized:
+                # 只有从 X 按钮触发的最小化才隐藏到托盘
+                if getattr(self, '_minimize_to_tray', False):
+                    self._minimize_to_tray = False
+                    QTimer.singleShot(200, self._hide_to_tray)
+
+    def _hide_to_tray(self):
+        """隐藏窗口到系统托盘"""
+        self.hide()
+        self._tray_icon.showMessage(
+            "PLC面板数据采集",
+            "程序已最小化到系统托盘，双击托盘图标可恢复窗口。",
+            QSystemTrayIcon.MessageIcon.Information,
+            2000,
+        )
 
     def _on_init_ready(self):
         """界面显示后启动后台线程做数据库初始化"""
@@ -387,6 +514,15 @@ class MonitorMainWindow(QMainWindow):
         if hasattr(self, '_dashboard'):
             self._dashboard.refresh_type_defs()
 
+        # 将 db_manager 传给告警页并加载历史告警数据
+        if self._db_manager and hasattr(self, '_alarms'):
+            self._alarms.set_db_manager(self._db_manager)
+
+        # 开机自启模式：初始化完成后自动开始采集
+        if self._auto_start:
+            import asyncio
+            asyncio.ensure_future(self.start_collecting())
+
     def _update_clock(self):
         """更新时钟显示"""
         self._time_label.setText(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -397,12 +533,10 @@ class MonitorMainWindow(QMainWindow):
                 for dev in self._config.all_devices]
 
     def _startup_cleanup(self):
-        """启动时清理过期数据（随机延迟后触发，避免多工控机同时 DELETE）"""
+        """启动时清理过期分区（随机延迟后触发，避免多工控机同时操作）"""
         if self._db_manager:
             try:
-                self._db_manager.cleanup_old_data(
-                    days=30, device_keys=self._get_device_keys()
-                )
+                self._db_manager.cleanup_old_data(days=30)
             except Exception as e:
                 import logging
                 logging.getLogger("plc_collector").warning(f"启动清理失败: {e}")
@@ -411,9 +545,7 @@ class MonitorMainWindow(QMainWindow):
         """定时清理过期数据（每24小时由定时器触发）"""
         if self._db_manager:
             try:
-                self._db_manager.cleanup_old_data(
-                    days=30, device_keys=self._get_device_keys()
-                )
+                self._db_manager.cleanup_old_data(days=30)
             except Exception as e:
                 import logging
                 logging.getLogger("plc_collector").warning(f"定期清理失败: {e}")

@@ -26,5 +26,5 @@ qasync>=0.27.0
 
 # ---- 打包工具 ----
 
-# Windows exe打包
-pyinstaller>=6.0
+# Nuitka 编译打包（将 Python 编译为 C++ 原生二进制，实现秒开）
+nuitka>=2.0

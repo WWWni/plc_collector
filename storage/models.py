@@ -12,7 +12,7 @@ import json
 from datetime import datetime
 from sqlalchemy import (
     Column, BigInteger, SmallInteger, Integer,
-    String, DateTime, Text, Index, Enum,
+    String, DateTime, Text, Index, Enum, PrimaryKeyConstraint,
 )
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.orm import DeclarativeBase
@@ -115,16 +115,15 @@ class DeviceTypeDef(Base):
 
 class PlcData(Base):
     """
-    统一采集数据表 — 所有设备类型共用
+    统一采集数据表 — 所有设备类型共用（按天分区）
 
     field_data 列存储 JSON 格式的采集字段值。
+    主键为 (id, timestamp) 以满足 MySQL 分区要求。
     """
     __tablename__ = "plc_data"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
-
-    # 元数据
-    timestamp = Column(DateTime, nullable=False, default=datetime.now, index=True)
+    id = Column(BigInteger, autoincrement=True)
+    timestamp = Column(DateTime, nullable=False, default=datetime.now)
     collector_id = Column(String(50), nullable=False, default="", index=True)
     server_index = Column(SmallInteger, nullable=False, default=0, index=True)
     slave_addr = Column(SmallInteger, nullable=False, index=True)
@@ -141,6 +140,8 @@ class PlcData(Base):
     fault_log = Column(Text, nullable=True)
 
     __table_args__ = (
+        PrimaryKeyConstraint('id', 'timestamp'),
+        Index("ix_plc_collector_time", "collector_id", "timestamp"),
         Index("ix_plc_server_device_time", "server_index", "slave_addr", "timestamp"),
     )
 

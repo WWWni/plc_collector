@@ -36,7 +36,7 @@ class DatabaseManager:
         return self._session_factory
 
     def initialize(self):
-        """初始化数据库引擎、建表、填充种子数据"""
+        """初始化数据库引擎、建表（plc_data 按天分区）"""
         url = get_db_url(self._config)
 
         engine_kwargs = {
@@ -50,7 +50,16 @@ class DatabaseManager:
             engine_kwargs["poolclass"] = QueuePool
 
         self._engine = create_engine(url, **engine_kwargs)
-        Base.metadata.create_all(self._engine)
+
+        # device_type_def 用 ORM 建表（无分区需求）
+        from storage.models import DeviceTypeDef
+        DeviceTypeDef.__table__.create(self._engine, checkfirst=True)
+
+        # plc_data 用原生 DDL 建分区表
+        self._create_partitioned_table()
+
+        # 创建未来 7 天的分区
+        self._ensure_future_partitions(days_ahead=7)
 
         self._session_factory = sessionmaker(
             bind=self._engine, expire_on_commit=False
@@ -60,6 +69,53 @@ class DatabaseManager:
             f"数据库初始化成功: {self._config.engine}://"
             f"{self._config.host}:{self._config.port}/{self._config.database}"
         )
+
+    def _create_partitioned_table(self):
+        """用原生 DDL 创建按天分区的 plc_data 表"""
+        ddl = """
+        CREATE TABLE IF NOT EXISTS plc_data (
+            id BIGINT AUTO_INCREMENT,
+            timestamp DATETIME NOT NULL,
+            collector_id VARCHAR(50) NOT NULL DEFAULT '',
+            server_index SMALLINT NOT NULL DEFAULT 0,
+            slave_addr SMALLINT NOT NULL,
+            device_name VARCHAR(50),
+            device_type VARCHAR(50) NOT NULL,
+            field_data JSON,
+            run_mode VARCHAR(20),
+            fault_log TEXT,
+            PRIMARY KEY (id, timestamp),
+            INDEX ix_plc_collector_time (collector_id, timestamp),
+            INDEX ix_plc_server_device_time (server_index, slave_addr, timestamp)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        PARTITION BY RANGE (TO_DAYS(timestamp)) (
+            PARTITION p_future VALUES LESS THAN MAXVALUE
+        )
+        """
+        with self._engine.connect() as conn:
+            conn.execute(text(ddl))
+            conn.commit()
+
+    def _ensure_future_partitions(self, days_ahead: int = 7):
+        """创建未来 N 天的日分区（幂等操作，已存在的分区忽略）"""
+        today = datetime.now().date()
+        with self._engine.connect() as conn:
+            for i in range(days_ahead + 1):
+                day = today + timedelta(days=i)
+                next_day = day + timedelta(days=1)
+                part_name = f"p{day.strftime('%Y%m%d')}"
+                alter_sql = (
+                    f"ALTER TABLE plc_data REORGANIZE PARTITION p_future INTO ("
+                    f"  PARTITION {part_name} VALUES LESS THAN (TO_DAYS('{next_day}')),"
+                    f"  PARTITION p_future VALUES LESS THAN MAXVALUE"
+                    f")"
+                )
+                try:
+                    conn.execute(text(alter_sql))
+                    conn.commit()
+                except Exception:
+                    # 分区已存在，忽略
+                    conn.rollback()
 
     # ============================================================
     # 采集数据读写
@@ -153,17 +209,19 @@ class DatabaseManager:
             session.close()
 
     def query_fault_events(self, limit: int = 200) -> List[dict]:
-        """查询故障事件（从 fault_log 字段解析，按 collector_id 过滤）"""
+        """查询故障事件（从 fault_log 字段解析，按 collector_id 过滤，最近24小时）"""
         if not self._session_factory:
             return []
 
         session = self._session_factory()
         try:
+            since = datetime.now() - timedelta(hours=24)
             query = (
                 session.query(PlcData.fault_log, PlcData.timestamp,
                               PlcData.slave_addr, PlcData.device_name)
                 .filter(PlcData.fault_log.isnot(None))
                 .filter(PlcData.fault_log != "")
+                .filter(PlcData.timestamp >= since)
             )
             if self._collector_id:
                 query = query.filter(PlcData.collector_id == self._collector_id)
@@ -228,57 +286,55 @@ class DatabaseManager:
     # 数据清理
     # ============================================================
 
-    def cleanup_old_data(
-        self, days: int = 30,
-        device_keys: list = None,
-        batch_size: int = 10000,
-    ) -> int:
-        """清理超过指定天数的历史采集数据"""
-        if not self._session_factory:
+    def cleanup_old_data(self, days: int = 30) -> int:
+        """清理超过指定天数的历史数据（通过 DROP PARTITION 瞬间完成）"""
+        if not self._engine:
             return 0
 
-        cutoff = datetime.now() - timedelta(days=days)
-        total_deleted = 0
+        cutoff_date = (datetime.now() - timedelta(days=days)).date()
+        dropped = 0
 
         try:
-            while True:
-                session = self._session_factory()
-                try:
-                    query = (
-                        session.query(PlcData.id)
-                        .filter(PlcData.timestamp < cutoff)
-                        .limit(batch_size)
-                    )
+            # 查询所有分区名和上界
+            with self._engine.connect() as conn:
+                result = conn.execute(text(
+                    "SELECT PARTITION_NAME, PARTITION_DESCRIPTION "
+                    "FROM INFORMATION_SCHEMA.PARTITIONS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'plc_data' "
+                    "ORDER BY PARTITION_ORDINAL_POSITION"
+                ))
+                partitions = result.fetchall()
 
-                    ids = [row[0] for row in query.all()]
-                    if not ids:
-                        break
-
-                    deleted = (
-                        session.query(PlcData)
-                        .filter(PlcData.id.in_(ids))
-                        .delete(synchronize_session=False)
-                    )
-                    session.commit()
-                    total_deleted += deleted
-
-                except Exception as e:
-                    session.rollback()
-                    logger.warning(f"分批清理中断: {e}")
-                    break
-                finally:
-                    session.close()
-
-                import time
-                time.sleep(0.1)
+            for part_name, part_desc in partitions:
+                # 跳过兜底分区
+                if part_name == "p_future":
+                    continue
+                # 分区名格式 pYYYYMMDD，提取日期
+                if part_name.startswith("p") and len(part_name) == 9:
+                    try:
+                        part_date = datetime.strptime(part_name[1:], "%Y%m%d").date()
+                        if part_date < cutoff_date:
+                            with self._engine.connect() as conn:
+                                conn.execute(text(
+                                    f"ALTER TABLE plc_data DROP PARTITION {part_name}"
+                                ))
+                                conn.commit()
+                            dropped += 1
+                    except ValueError:
+                        pass  # 非标准分区名，跳过
+                    except Exception:
+                        pass  # 分区可能已被其他 IPC 删除
 
         except Exception as e:
-            logger.warning(f"清理过期数据失败: {e}")
+            logger.warning(f"清理过期分区失败: {e}")
 
-        if total_deleted > 0:
-            logger.info(f"已清理 {total_deleted} 条过期数据（{days}天前）")
+        if dropped > 0:
+            logger.info(f"已删除 {dropped} 个过期分区（{days}天前）")
 
-        return total_deleted
+        # 顺便确保未来分区存在
+        self._ensure_future_partitions(days_ahead=7)
+
+        return dropped
 
     # ============================================================
     # 设备类型定义查询

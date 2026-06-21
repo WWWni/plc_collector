@@ -150,6 +150,24 @@ class SchedulerPage(QWidget):
 
         layout.addWidget(log_group)
 
+        # ---- 开机自启 ----
+        startup_group = QGroupBox("开机自启")
+        startup_layout = QVBoxLayout(startup_group)
+        startup_layout.setSpacing(8)
+
+        self._auto_start_check = QCheckBox("开机自动启动程序并自动开始采集")
+        self._auto_start_check.setStyleSheet("font-size: 13px; padding: 4px 0;")
+        startup_layout.addWidget(self._auto_start_check)
+
+        startup_hint = QLabel(
+            "启用后程序将随 Windows 开机自动启动，隐藏到系统托盘并在初始化完成后自动开始采集。"
+        )
+        startup_hint.setObjectName("hintText")
+        startup_hint.setWordWrap(True)
+        startup_layout.addWidget(startup_hint)
+
+        layout.addWidget(startup_group)
+
         layout.addStretch()
 
         scroll.setWidget(content)
@@ -207,8 +225,14 @@ class SchedulerPage(QWidget):
         self._max_bytes_spin.setValue(log.max_bytes // (1024 * 1024))
         self._backup_spin.setValue(log.backup_count)
 
+        # 开机自启（从注册表读取状态）
+        self._auto_start_check.setChecked(self._is_auto_start_enabled())
+
     def save_to_dict(self) -> dict:
         """导出配置字典"""
+        # 更新 Windows 注册表（开机自启）
+        self._update_auto_start_registry()
+
         return {
             "scheduler": {
                 "interval_seconds": self._interval_spin.value(),
@@ -224,6 +248,63 @@ class SchedulerPage(QWidget):
                 "backup_count": self._backup_spin.value(),
             },
         }
+
+    def _is_auto_start_enabled(self) -> bool:
+        """从 Windows 注册表检查开机自启是否已启用"""
+        import winreg
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run",
+                0, winreg.KEY_QUERY_VALUE
+            )
+            try:
+                winreg.QueryValueEx(key, "PLC_Collector")
+                return True
+            except FileNotFoundError:
+                return False
+            finally:
+                winreg.CloseKey(key)
+        except OSError:
+            return False
+
+    def _update_auto_start_registry(self):
+        """根据开机自启复选框状态更新 Windows 注册表"""
+        import sys
+        import winreg
+
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        value_name = "PLC_Collector"
+
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, key_path,
+                0, winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE
+            )
+        except OSError:
+            return
+
+        try:
+            if self._auto_start_check.isChecked():
+                # 获取程序路径
+                if getattr(sys, 'frozen', False):
+                    # PyInstaller 打包后
+                    exe_path = sys.executable
+                    cmd = f'"{exe_path}" --auto'
+                else:
+                    # 开发模式
+                    exe_path = sys.executable
+                    script = sys.argv[0]
+                    cmd = f'"{exe_path}" "{script}" --auto'
+                winreg.SetValueEx(key, value_name, 0, winreg.REG_SZ, cmd)
+            else:
+                # 删除注册表项
+                try:
+                    winreg.DeleteValue(key, value_name)
+                except FileNotFoundError:
+                    pass  # 本来就不存在
+        finally:
+            winreg.CloseKey(key)
 
     def validate(self) -> list:
         """校验"""
