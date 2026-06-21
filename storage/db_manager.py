@@ -52,8 +52,11 @@ class DatabaseManager:
         self._engine = create_engine(url, **engine_kwargs)
 
         # device_type_def 用 ORM 建表（无分区需求）
-        from storage.models import DeviceTypeDef
+        from storage.models import DeviceTypeDef, DeviceRegistry
         DeviceTypeDef.__table__.create(self._engine, checkfirst=True)
+
+        # device_registry 设备注册表
+        DeviceRegistry.__table__.create(self._engine, checkfirst=True)
 
         # plc_data 用原生 DDL 建分区表
         self._create_partitioned_table()
@@ -182,7 +185,75 @@ class DatabaseManager:
         finally:
             session.close()
 
+        # 注册/更新设备（独立事务，不影响主写入）
+        self._register_devices(data_list)
+
         return inserted
+
+    def _register_devices(self, data_list: List[dict]):
+        """注册设备到 device_registry（INSERT ON DUPLICATE KEY UPDATE）"""
+        if not self._engine:
+            return
+
+        now = datetime.now()
+        seen = set()
+        for data in data_list:
+            addr = data.get("slave_addr", 0)
+            if addr in seen:
+                continue
+            seen.add(addr)
+
+            sql = text("""
+                INSERT INTO device_registry 
+                    (device_name, device_type, slave_addr, collector_id, server_index, first_seen, last_seen)
+                VALUES 
+                    (:name, :type, :addr, :cid, :sidx, :now, :now)
+                ON DUPLICATE KEY UPDATE 
+                    device_name = VALUES(device_name),
+                    device_type = VALUES(device_type),
+                    last_seen = VALUES(last_seen)
+            """)
+            try:
+                with self._engine.connect() as conn:
+                    conn.execute(sql, {
+                        "name": data.get("device_name", ""),
+                        "type": data.get("device_type", "unknown"),
+                        "addr": addr,
+                        "cid": self._collector_id,
+                        "sidx": data.get("server_index", 0),
+                        "now": now,
+                    })
+                    conn.commit()
+            except Exception:
+                pass  # 注册失败不影响采集
+
+    def query_device_registry(self) -> List[dict]:
+        """查询所有已注册设备"""
+        if not self._session_factory:
+            return []
+
+        from storage.models import DeviceRegistry
+        session = self._session_factory()
+        try:
+            rows = (
+                session.query(DeviceRegistry)
+                .order_by(DeviceRegistry.collector_id, DeviceRegistry.slave_addr)
+                .all()
+            )
+            return [
+                {
+                    "device_name": r.device_name,
+                    "device_type": r.device_type,
+                    "slave_addr": r.slave_addr,
+                    "collector_id": r.collector_id,
+                    "server_index": r.server_index,
+                    "first_seen": r.first_seen.isoformat() if r.first_seen else None,
+                    "last_seen": r.last_seen.isoformat() if r.last_seen else None,
+                }
+                for r in rows
+            ]
+        finally:
+            session.close()
 
     def query_latest(
         self, slave_addr: int = None, device_type: str = None,

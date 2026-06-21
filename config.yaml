@@ -50,10 +50,13 @@ display_config:
     label: 织布总数
     unit: ''
     format: ','
-  - key: gear
+  - key: current_gear_run
     label: 档位(运/点)
     unit: ''
     format: gear
+    fields:
+    - current_gear_run
+    - current_gear_jog
   n90sc_counter:
   - key: display_value
     label: 当前值

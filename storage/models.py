@@ -152,5 +152,38 @@ class PlcData(Base):
         )
 
 
+# ============================================================
+# 设备注册表 (device_registry)
+# ============================================================
+
+class DeviceRegistry(Base):
+    """
+    设备注册表 — 记录所有曾经采集过的设备
+
+    每条记录唯一标识一台设备（collector_id + slave_addr）。
+    batch_insert 时自动注册新设备、更新 last_seen。
+    """
+    __tablename__ = "device_registry"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    device_name = Column(String(50), nullable=False)
+    device_type = Column(String(50), nullable=False)
+    slave_addr = Column(SmallInteger, nullable=False)
+    collector_id = Column(String(50), nullable=False)
+    server_index = Column(SmallInteger, nullable=False, default=0)
+    first_seen = Column(DateTime, nullable=False, default=datetime.now)
+    last_seen = Column(DateTime, nullable=False, default=datetime.now)
+
+    __table_args__ = (
+        Index("uk_device_collector_addr", "collector_id", "slave_addr", unique=True),
+    )
+
+    def __repr__(self):
+        return (
+            f"<DeviceRegistry(name={self.device_name!r}, "
+            f"addr={self.slave_addr}, collector={self.collector_id!r})>"
+        )
+
+
 # 所有模型列表 (用于 create_all)
-ALL_MODELS = [DeviceTypeDef, PlcData]
+ALL_MODELS = [DeviceTypeDef, PlcData, DeviceRegistry]

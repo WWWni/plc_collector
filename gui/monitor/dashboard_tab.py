@@ -31,10 +31,19 @@ def _get_status_info(run_mode: str, status_map: dict) -> Tuple[str, str]:
 
 def _format_field_value(value, field_def: dict, data: dict) -> str:
     """根据格式定义格式化字段值"""
-    if value is None:
+    fmt = field_def.get("format", "s")
+
+    # gear 格式特殊处理：从子字段读取，不依赖 value
+    if fmt == "gear":
+        fields = field_def.get("fields", [])
+        if len(fields) >= 2:
+            run_gear = data.get(fields[0], 0)
+            jog_gear = data.get(fields[1], 0)
+            return f"{run_gear} / {jog_gear}"
         return "—"
 
-    fmt = field_def.get("format", "s")
+    if value is None:
+        return "—"
 
     if fmt == ".1f":
         return f"{value:.1f}"
@@ -43,11 +52,6 @@ def _format_field_value(value, field_def: dict, data: dict) -> str:
     elif fmt == ",":
         return f"{value:,}"
     elif fmt == "s":
-        return str(value)
-    elif fmt == "gear":
-        fields = field_def.get("fields", [])
-        if len(fields) >= 2:
-            return f"{data.get(fields[0], 0)} / {data.get(fields[1], 0)}"
         return str(value)
     else:
         return str(value)

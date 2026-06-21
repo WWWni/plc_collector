@@ -480,10 +480,14 @@
         "format": ","
       },
       {
-        "key": "gear",
+        "key": "current_gear_run",
         "label": "档位(运/点)",
         "unit": "",
-        "format": "gear"
+        "format": "gear",
+        "fields": [
+          "current_gear_run",
+          "current_gear_jog"
+        ]
       }
     ],
     "status_map": {

@@ -228,29 +228,37 @@ def _resolve_collector_id(configured_id: str, config_path: str) -> str:
     """
     解析采集实例唯一标识
 
-    优先级: config.yaml 手动配置 > collector.id 文件 > 自动生成 UUID
+    优先级: config.yaml 手动配置 > Windows 注册表 > 自动生成 UUID
     """
     # 1. config.yaml 中手动配置
     if configured_id and configured_id.strip():
         return configured_id.strip()
 
-    # 2. 从 collector.id 文件读取（上次自动生成的）
-    id_file = os.path.join(os.path.dirname(os.path.abspath(config_path)), "collector.id")
-    if os.path.exists(id_file):
-        try:
-            with open(id_file, "r", encoding="utf-8") as f:
-                saved_id = f.read().strip()
-            if saved_id:
-                return saved_id
-        except Exception:
-            pass
+    # 2. 从 Windows 注册表读取
+    import winreg
+    reg_key_path = r"Software\PLC_Collector"
+    reg_value_name = "collector_id"
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, reg_key_path,
+            0, winreg.KEY_QUERY_VALUE
+        )
+        saved_id, _ = winreg.QueryValueEx(key, reg_value_name)
+        winreg.CloseKey(key)
+        if saved_id:
+            return saved_id
+    except (OSError, FileNotFoundError):
+        pass
 
-    # 3. 自动生成 UUID 并持久化
+    # 3. 自动生成 UUID 并写入注册表
     generated = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
     try:
-        with open(id_file, "w", encoding="utf-8") as f:
-            f.write(generated)
-    except Exception:
+        key = winreg.CreateKey(
+            winreg.HKEY_CURRENT_USER, reg_key_path
+        )
+        winreg.SetValueEx(key, reg_value_name, 0, winreg.REG_SZ, generated)
+        winreg.CloseKey(key)
+    except OSError:
         pass
     return generated
 

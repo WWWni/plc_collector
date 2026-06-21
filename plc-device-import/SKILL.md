@@ -123,16 +123,24 @@ version: 1.0.0
 选择原则：根据行业经验，优先选择最能反映设备运行状态的核心指标（如产量、速度、温度等），而非所有可用字段。
 
 ```json
-// 仪表板上显示的字段 — 必须包含全部四个属性
+// 普通字段 — 必须包含全部四个属性
 {"key": "speed", "label": "转速", "unit": "rpm", "format": ".1f"}
-// format 支持: Python格式字符串(".1f"), "s"(字符串), ","(千分位), "gear"(特殊档位显示)
+// format 支持: Python格式字符串(".1f"), "s"(字符串), ","(千分位)
+
+// 组合字段（如档位）— key 必须是实际存在的字段，额外需要 fields 数组指定子字段
+{"key": "current_gear_run", "label": "档位(运/点)", "unit": "", "format": "gear",
+ "fields": ["current_gear_run", "current_gear_jog"]}
 // unit 支持: 固定字符串, "dynamic"(从数据中读取), ""(无单位)
 ```
 
-> **⚠ 必须包含完整元数据（key / label / unit / format）**
+> **⚠ 必须包含完整元数据（key / label / unit / format，组合字段还需 fields）**
 > UI 的展示配置页面（DisplayPage）以 `display_fields` 作为字段列表的主数据源。
 > 如果缺少 `unit` 或 `format`，用户在 UI 中勾选该字段后保存到 config.yaml 的条目也会缺失这些属性，导致仪表板卡片渲染时格式错误（数值显示为原始字符串、单位丢失等）。
-> `parse_rules` 和 `bit_fields` 中产生的字段仅作为补充来源，不包含 unit/format 信息。
+>
+> **⚠ 自定义 format（如 gear）的注意事项：**
+> `key` 必须指向 parse_rules 中实际产生的字段名（否则 value 为 None，卡片显示 "—"）。
+> 如果 format handler 需要从 data 中读取多个子字段（如 gear 读取运行档位和点动档位），必须通过 `fields` 数组声明子字段名。
+> `parse_rules` 和 `bit_fields` 中产生的字段仅作为补充来源，不包含 unit/format/fields 信息。
 
 此定义为设备类型级别的默认值。用户可在本地 config.yaml 中按设备实例自定义覆盖。
 
