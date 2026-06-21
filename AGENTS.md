@@ -67,7 +67,7 @@ per-device 参数 > 服务器全局参数 > 代码默认值
 - 写入表名可通过 `config.yaml` 的 `database.table_name` 配置
 - `SQLAlchemy create_all` 不会自动补充缺失列，需手动 `ALTER TABLE`
 - 多工控机共享数据库时，通过 `collector_id` 隔离数据
-- 历史数据保留 30 天，清理使用分批删除（每批 1 万行 + 100ms 间隔）
+- 历史数据按天分区（RANGE PARTITION），保留 30 天，清理通过 `DROP PARTITION` 瞬间完成
 
 ### GUI
 
