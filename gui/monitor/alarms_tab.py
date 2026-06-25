@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QPushButton, QFileDialog, QSplitter, QFrame,
     QScroller, QAbstractItemView,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from datetime import datetime
 from typing import Dict, List, Any
@@ -53,6 +53,8 @@ class FaultRecord:
 class AlarmsTab(QWidget):
     """故障告警Tab"""
 
+    _history_loaded_signal = Signal(list)  # 后台线程加载完成后发送事件列表
+
     def __init__(self, db_manager=None, parent=None):
         super().__init__(parent)
         self._db_manager = db_manager
@@ -61,9 +63,78 @@ class AlarmsTab(QWidget):
         self._active_records: Dict[str, FaultRecord] = {}  # key="addr:fault_name"
         self._all_records: List[FaultRecord] = []
 
+        # 连接信号：后台线程加载完数据后刷新 UI
+        self._history_loaded_signal.connect(self._on_history_loaded)
+
         self._setup_ui()
-        if self._db_manager:
-            self.load_from_db()
+
+    def set_db_manager(self, db_manager):
+        """设置数据库管理器（不触发加载）"""
+        self._db_manager = db_manager
+
+    def load_from_db_async(self):
+        """在后台线程加载历史故障数据，不阻塞 UI"""
+        self._loading_label.show()
+        self._history_table.hide()
+        import threading
+        t = threading.Thread(target=self._do_load_from_db, daemon=True)
+        t.start()
+
+    def _do_load_from_db(self):
+        """后台线程：查询数据库获取故障事件列表"""
+        if not self._db_manager:
+            return
+        try:
+            events = self._db_manager.query_fault_events(limit=200)
+            # 通过信号将数据传递到主线程处理
+            self._history_loaded_signal.emit(events)
+        except Exception as e:
+            import logging
+            logging.getLogger("plc_collector.alarms").warning(
+                f"从数据库加载故障记录失败: {e}"
+            )
+
+    def _on_history_loaded(self, events: list):
+        """主线程：处理加载完成的事件数据并刷新 UI"""
+        self._loading_label.hide()
+        self._history_table.show()
+        self._all_records.clear()
+        self._active_records.clear()
+
+        for ev in events:
+            device_name = ev.get("device_name", "")
+            slave_addr = ev.get("slave_addr", 0)
+            fault_name = ev.get("fault_name", "")
+            start_str = ev.get("start_time", "")
+            end_str = ev.get("end_time")
+
+            try:
+                start_time = datetime.strptime(start_str, "%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                continue
+
+            rec = FaultRecord(device_name, slave_addr, fault_name, start_time)
+            if end_str:
+                try:
+                    rec.end_time = datetime.strptime(end_str, "%Y-%m-%d %H:%M:%S")
+                except (ValueError, TypeError):
+                    pass
+
+            key = f"{slave_addr}:{fault_name}"
+            if rec.end_time is None:
+                self._active_records[key] = rec
+                self._last_faults.setdefault(slave_addr, set()).add(fault_name)
+            else:
+                self._all_records.append(rec)
+
+            if self._device_filter.findData(slave_addr) == -1:
+                self._device_filter.addItem(device_name, slave_addr)
+
+        if len(self._all_records) > MAX_HISTORY_RECORDS:
+            self._all_records = self._all_records[:MAX_HISTORY_RECORDS]
+
+        self._refresh_active_table()
+        self._refresh_history_table()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -149,67 +220,19 @@ class AlarmsTab(QWidget):
         )
         layout.addWidget(self._history_table)
 
+        # 加载中提示（覆盖在历史表格上方，初始隐藏）
+        self._loading_label = QLabel("⏳ 正在加载历史告警数据...")
+        self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._loading_label.setStyleSheet(
+            f"color: {COLORS['accent_yellow']}; font-size: 14px; "
+            f"font-weight: bold; padding: 40px;"
+        )
+        self._loading_label.hide()
+        layout.addWidget(self._loading_label)
+
         # 初始隐藏表格，显示无故障
         self._no_fault_label.show()
         self._active_table.hide()
-
-    def set_db_manager(self, db_manager):
-        """设置数据库管理器并加载历史故障"""
-        self._db_manager = db_manager
-        self.load_from_db()
-
-    def load_from_db(self):
-        """从数据库加载历史故障事件"""
-        if not self._db_manager:
-            return
-        try:
-            events = self._db_manager.query_fault_events(limit=200)
-            # 清空当前内存记录
-            self._all_records.clear()
-            self._active_records.clear()
-
-            for ev in events:
-                device_name = ev.get("device_name", "")
-                slave_addr = ev.get("slave_addr", 0)
-                fault_name = ev.get("fault_name", "")
-                start_str = ev.get("start_time", "")
-                end_str = ev.get("end_time")
-
-                try:
-                    start_time = datetime.strptime(start_str, "%Y-%m-%d %H:%M:%S")
-                except (ValueError, TypeError):
-                    continue
-
-                rec = FaultRecord(device_name, slave_addr, fault_name, start_time)
-                if end_str:
-                    try:
-                        rec.end_time = datetime.strptime(end_str, "%Y-%m-%d %H:%M:%S")
-                    except (ValueError, TypeError):
-                        pass
-
-                key = f"{slave_addr}:{fault_name}"
-                if rec.end_time is None:
-                    # 活跃故障
-                    self._active_records[key] = rec
-                    self._last_faults.setdefault(slave_addr, set()).add(fault_name)
-                else:
-                    self._all_records.append(rec)
-
-                # 添加到设备筛选下拉
-                if self._device_filter.findData(slave_addr) == -1:
-                    self._device_filter.addItem(device_name, slave_addr)
-
-            # 截断历史记录
-            if len(self._all_records) > MAX_HISTORY_RECORDS:
-                self._all_records = self._all_records[:MAX_HISTORY_RECORDS]
-
-            self._refresh_active_table()
-            self._refresh_history_table()
-        except Exception as e:
-            import logging
-            logging.getLogger("plc_collector.alarms").warning(
-                f"从数据库加载故障记录失败: {e}"
-            )
 
     def check_faults(self, data_list: List[dict]):
         """

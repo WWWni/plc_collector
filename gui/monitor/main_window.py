@@ -476,6 +476,7 @@ class MonitorMainWindow(QMainWindow):
         """后台线程：数据库连接 + 设备类型加载"""
         import logging
         logger = logging.getLogger("plc_collector.app")
+        logger.info(f"[bg_init] collector_id={self._config.collector_id!r}")
 
         try:
             from storage.db_manager import DatabaseManager
@@ -496,12 +497,21 @@ class MonitorMainWindow(QMainWindow):
             self._db_manager = None
 
         # 通过信号通知主线程更新 UI（线程安全）
+        logger.info("[init_done] 后台初始化完成，发送信号")
         self._init_done_signal.emit()
 
     def _on_init_done(self):
         """后台初始化完成，在主线程中启用按钮（可被多次调用，幂等）"""
+        import logging
+        import time
+        _logger = logging.getLogger("plc_collector.app")
+        _t0 = time.monotonic()
+
         if self._start_btn.isEnabled():
             return  # 已经启用过，跳过
+
+        _logger.info(f"[init_done] 信号到达主线程")
+
         self._start_btn.setEnabled(True)
         self._test_btn.setEnabled(True)
         self._config_btn.setEnabled(True)
@@ -510,18 +520,24 @@ class MonitorMainWindow(QMainWindow):
             f"color: {COLORS['status_offline']}; font-weight: bold; "
             f"font-size: 13px; padding: 0 8px;"
         )
+
         # 刷新卡片的type_def，让离线状态立即显示正确的中文和颜色
         if hasattr(self, '_dashboard'):
             self._dashboard.refresh_type_defs()
+            _logger.info(f"[init_done] refresh_type_defs 完成 +{time.monotonic()-_t0:.3f}s")
 
-        # 将 db_manager 传给告警页并加载历史告警数据
+        # 将 db_manager 传给告警页，后台线程加载历史告警数据（不阻塞 UI）
         if self._db_manager and hasattr(self, '_alarms'):
             self._alarms.set_db_manager(self._db_manager)
+            self._alarms.load_from_db_async()
+            _logger.info(f"[init_done] alarms 后台加载已启动 +{time.monotonic()-_t0:.3f}s")
 
         # 开机自启模式：初始化完成后自动开始采集
         if self._auto_start:
             import asyncio
             asyncio.ensure_future(self.start_collecting())
+
+        _logger.info(f"[init_done] 全部完成 +{time.monotonic()-_t0:.3f}s")
 
     def _update_clock(self):
         """更新时钟显示"""
@@ -914,35 +930,16 @@ class MonitorMainWindow(QMainWindow):
     # ---- 配置管理 ----
 
     def _on_open_config(self):
-        """打开配置对话框"""
-        import asyncio
-        # 正在采集时先停止
-        if self._scheduler and self._scheduler.is_running:
-            reply = QMessageBox.question(
-                self, "配置", "正在采集中，打开配置需要先停止采集，是否继续？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-            asyncio.ensure_future(self._stop_and_open_config())
-        else:
-            self._do_open_config()
-
-    async def _stop_and_open_config(self):
-        """停止采集后打开配置"""
-        self._config_btn.setText("⏳ 停止中...")
-        self._config_btn.setEnabled(False)
-        try:
-            await self.stop_collecting()
-        finally:
-            self._config_btn.setEnabled(True)
-            self._config_btn.setText("⚙ 配置")
+        """打开配置对话框（无论是否在采集都可以打开查看）"""
         self._do_open_config()
 
     def _do_open_config(self):
         """打开配置对话框（模态）"""
         from gui.config.main_window import ConfigMainWindow
         from config_loader import load_config
+
+        # 记录打开配置时是否在采集
+        was_collecting = self._collecting and self._scheduler and self._scheduler.is_running
 
         dlg = ConfigMainWindow(
             config=self._config,
@@ -956,24 +953,53 @@ class MonitorMainWindow(QMainWindow):
         if not getattr(dlg, 'config_saved', False):
             return
 
-        # 重新加载配置
+        # 采集中保存配置 → 提示用户将重启采集
+        auto_restart = False
+        if was_collecting:
+            reply = QMessageBox.question(
+                self, "配置已修改",
+                "配置已保存，修改配置需要重启采集。\n是否立即重启？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            auto_restart = (reply == QMessageBox.StandardButton.Yes)
+
+        # 重新加载配置（无论是否重启采集都要加载）
         try:
             new_config = load_config(self._config_path)
         except Exception as e:
             QMessageBox.critical(self, "配置重载失败", f"无法重新加载配置文件:\n{e}")
             return
 
-        # 停止采集（如有）
+        # 应用新配置
         import asyncio
-        if self._scheduler and self._scheduler.is_running:
-            asyncio.ensure_future(self._stop_and_reload(new_config))
+        if was_collecting:
+            asyncio.ensure_future(self._reload_with_loading(new_config, auto_restart))
         else:
             asyncio.ensure_future(self._apply_new_config(new_config))
 
-    async def _stop_and_reload(self, new_config):
-        """停止采集后重载配置"""
-        await self.stop_collecting()
-        await self._apply_new_config(new_config)
+    def _set_loading_state(self, loading: bool):
+        """设置加载过渡状态：禁用/启用所有操作按钮"""
+        self._start_btn.setEnabled(not loading)
+        self._test_btn.setEnabled(not loading)
+        self._config_btn.setEnabled(not loading)
+        if loading:
+            self._start_btn.setText("⏳ 配置重载中...")
+            self._conn_label.setText("● 配置重载中...")
+            self._conn_label.setStyleSheet(
+                f"color: {COLORS['accent_yellow']}; font-weight: bold; "
+                f"font-size: 13px; padding: 0 8px;"
+            )
+
+    async def _reload_with_loading(self, new_config, auto_restart: bool):
+        """停止 → 应用配置 → 可选重启采集，全程显示加载状态"""
+        self._set_loading_state(True)
+        try:
+            await self.stop_collecting()
+            await self._apply_new_config(new_config)
+            if auto_restart:
+                await self.start_collecting()
+        finally:
+            self._set_loading_state(False)
 
     async def _apply_new_config(self, new_config):
         """应用新配置：重建传输层和UI"""

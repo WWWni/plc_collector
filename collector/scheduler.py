@@ -97,6 +97,9 @@ class CollectorScheduler:
         # 按服务器分组遍历
         current_server_idx = -1
         for device in self._devices:
+            if not self._running:
+                break
+
             # 服务器切换时记录日志（可选）
             if device.server_index != current_server_idx:
                 current_server_idx = device.server_index
@@ -120,6 +123,8 @@ class CollectorScheduler:
         logger.info(f"采集循环启动，间隔={interval}s")
 
         while self._running:
+            round_start = asyncio.get_event_loop().time()
+
             try:
                 results = await self._collect_one_round()
                 self._round_count += 1
@@ -144,11 +149,19 @@ class CollectorScheduler:
             except Exception as e:
                 logger.error(f"采集循环异常: {e}", exc_info=True)
 
-            # 等待下一个采集周期
-            try:
-                await asyncio.sleep(interval)
-            except asyncio.CancelledError:
-                break
+            # 计算剩余时间 = 间隔 - 本轮采集耗时
+            elapsed = asyncio.get_event_loop().time() - round_start
+            remaining = max(0, interval - elapsed)
+
+            # 拆成 1 秒小段等待，每段检查 self._running 实现快速停止
+            waited = 0.0
+            while self._running and waited < remaining:
+                chunk = min(1.0, remaining - waited)
+                try:
+                    await asyncio.sleep(chunk)
+                except asyncio.CancelledError:
+                    break
+                waited += chunk
 
         logger.info("采集循环已停止")
 

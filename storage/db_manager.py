@@ -61,8 +61,13 @@ class DatabaseManager:
         # plc_data 用原生 DDL 建分区表
         self._create_partitioned_table()
 
-        # 创建未来 7 天的分区
-        self._ensure_future_partitions(days_ahead=7)
+        # 创建分区锁表，尝试获取今天的分区锁
+        self._create_partition_lock_table()
+        if self._acquire_partition_lock():
+            # 今天第一个启动的实例，负责创建未来 7 天的分区
+            self._ensure_future_partitions(days_ahead=7)
+        else:
+            logger.info("今日分区已由其他实例创建，跳过")
 
         self._session_factory = sessionmaker(
             bind=self._engine, expire_on_commit=False
@@ -119,6 +124,27 @@ class DatabaseManager:
                 except Exception:
                     # 分区已存在，忽略
                     conn.rollback()
+
+    def _create_partition_lock_table(self):
+        """创建分区锁表（轻量协调表，避免多 IPC 同时 ALTER TABLE 抢锁）"""
+        ddl = """
+        CREATE TABLE IF NOT EXISTS partition_lock (
+            lock_date DATE PRIMARY KEY
+        ) ENGINE=InnoDB
+        """
+        with self._engine.connect() as conn:
+            conn.execute(text(ddl))
+            conn.commit()
+
+    def _acquire_partition_lock(self) -> bool:
+        """尝试获取今天的分区锁，成功返回 True（今天第一个启动的实例）"""
+        sql = text(
+            "INSERT IGNORE INTO partition_lock (lock_date) VALUES (CURDATE())"
+        )
+        with self._engine.connect() as conn:
+            result = conn.execute(sql)
+            conn.commit()
+            return result.rowcount > 0
 
     # ============================================================
     # 采集数据读写
@@ -280,26 +306,40 @@ class DatabaseManager:
             session.close()
 
     def query_fault_events(self, limit: int = 200) -> List[dict]:
-        """查询故障事件（从 fault_log 字段解析，按 collector_id 过滤，最近24小时）"""
+        """查询故障事件（从 fault_log 字段解析，按 collector_id 过滤，最近24小时）
+        
+        使用双层子查询优化：先在索引上过滤 id，再取 fault_log，避免全表扫描 TEXT 列。
+        双层嵌套是 MySQL 对 LIMIT in IN-subquery 的 workaround。
+        """
         if not self._session_factory:
             return []
+
+        logger.info(f"[query_fault_events] collector_id={self._collector_id!r}")
 
         session = self._session_factory()
         try:
             since = datetime.now() - timedelta(hours=24)
-            query = (
-                session.query(PlcData.fault_log, PlcData.timestamp,
-                              PlcData.slave_addr, PlcData.device_name)
+
+            # 内层子查询：利用索引快速筛选 id（含 LIMIT）
+            inner_q = (
+                session.query(PlcData.id)
                 .filter(PlcData.fault_log.isnot(None))
                 .filter(PlcData.fault_log != "")
                 .filter(PlcData.timestamp >= since)
             )
             if self._collector_id:
-                query = query.filter(PlcData.collector_id == self._collector_id)
+                inner_q = inner_q.filter(PlcData.collector_id == self._collector_id)
+            inner_q = inner_q.order_by(PlcData.timestamp.desc()).limit(500)
+
+            # 外层包装：绕过 MySQL "LIMIT in IN-subquery" 限制
+            wrapper = inner_q.subquery().alias("id_wrapper")
+
+            # 主查询：只取匹配行的完整数据
             rows = (
-                query
+                session.query(PlcData.fault_log, PlcData.timestamp,
+                              PlcData.slave_addr, PlcData.device_name)
+                .filter(PlcData.id.in_(session.query(wrapper.c.id)))
                 .order_by(PlcData.timestamp.desc())
-                .limit(500)
                 .all()
             )
 
