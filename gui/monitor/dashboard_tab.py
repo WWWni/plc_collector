@@ -19,6 +19,8 @@ from protocol.device_types import get_safe
 
 # 通用默认颜色（status_map 中未定义时使用）
 _DEFAULT_COLOR = "#9e9e9e"
+# "online" 状态的默认颜色和文字（无 run_mode_rules 的简单设备采集成功时使用）
+_ONLINE_DEFAULT = ("#4caf50", "在线")
 
 
 def _get_status_info(run_mode: str, status_map: dict) -> Tuple[str, str]:
@@ -26,6 +28,9 @@ def _get_status_info(run_mode: str, status_map: dict) -> Tuple[str, str]:
     if status_map and run_mode in status_map:
         info = status_map[run_mode]
         return info.get("color", _DEFAULT_COLOR), info.get("text", run_mode)
+    # status_map 中未定义的状态：online 用绿色，其余用灰色
+    if run_mode == "online":
+        return _ONLINE_DEFAULT
     return _DEFAULT_COLOR, run_mode
 
 
@@ -168,7 +173,7 @@ class DeviceCard(QFrame):
 
     def update_data(self, data: dict):
         """用采集数据更新卡片"""
-        run_mode = data.get("run_mode", "unknown")
+        run_mode = data.get("run_mode", "online")
         active_faults = data.get("active_faults", [])
         status_map = getattr(self._type_def, 'STATUS_MAP', None) or {}
 
@@ -317,3 +322,8 @@ class DashboardTab(QWidget):
         for key, card in self._cards.items():
             if key not in updated_keys:
                 card.set_offline()
+
+    def set_all_offline(self):
+        """将所有设备卡片标记为离线（停止采集时调用）"""
+        for card in self._cards.values():
+            card.set_offline()

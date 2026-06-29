@@ -47,6 +47,7 @@ def create_transports(config):
                 tcp_timeout=srv.connection.tcp_timeout,
                 modbus_timeout=modbus_timeout,
                 modbus_retry=modbus_retry,
+                modbus_retry_delay=modbus_retry_delay,
             )
         elif mode == "modbus_tcp":
             t = ModbusTcpTransport(

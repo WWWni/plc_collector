@@ -30,9 +30,10 @@ class TransportBase(ABC):
         *,
         timeout: Optional[float] = None,
         retry: Optional[int] = None,
+        read_function: str = "holding",
     ) -> List[int]:
         """
-        读取保持寄存器
+        读取寄存器
 
         Args:
             slave_addr: 从站地址 (1-128)
@@ -40,6 +41,8 @@ class TransportBase(ABC):
             quantity: 读取数量
             timeout: 单次超时时间(秒)，None则使用全局默认值
             retry: 重试次数，None则使用全局默认值
+            read_function: 读取功能类型，"holding"=读保持寄存器(0x03)，
+                           "input"=读输入寄存器(0x04)
 
         Returns:
             寄存器值列表

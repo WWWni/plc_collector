@@ -491,6 +491,8 @@ class MonitorMainWindow(QMainWindow):
             n = load_device_types_from_db(self._db_manager.session_factory)
             if n > 0:
                 save_cache(self._config_dir)
+            # 设置统计配置映射
+            self._db_manager.set_value_key_map(self._build_value_key_map())
             logger.info(f"数据库初始化成功，从DB加载 {n} 个设备类型定义（缓存已更新）")
         except Exception as e:
             logger.warning(f"数据库初始化失败，继续使用缓存中的设备类型定义: {e}")
@@ -542,6 +544,10 @@ class MonitorMainWindow(QMainWindow):
     def _update_clock(self):
         """更新时钟显示"""
         self._time_label.setText(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    def _build_value_key_map(self) -> dict:
+        """从配置中构建 device_type -> value_key 映射"""
+        return dict(getattr(self._config, 'statistics_config', {}) or {})
 
     def _get_device_keys(self) -> list:
         """获取本机所有设备的 (device_name, slave_addr) 标识"""
@@ -709,6 +715,10 @@ class MonitorMainWindow(QMainWindow):
         self._start_btn.style().polish(self._start_btn)
         # 恢复连接测试按钮
         self._test_btn.setEnabled(True)
+
+        # 将所有卡片标记为离线
+        if hasattr(self, '_dashboard'):
+            self._dashboard.set_all_offline()
 
     def _set_btn_start(self):
         """将按钮恢复为'开始采集'就绪状态"""
@@ -1048,6 +1058,12 @@ class MonitorMainWindow(QMainWindow):
         self._start_btn.style().unpolish(self._start_btn)
         self._start_btn.style().polish(self._start_btn)
         self._test_btn.setEnabled(True)
+
+        # 更新统计配置映射 + 同步设备注册表
+        if self._db_manager:
+            self._db_manager.set_value_key_map(self._build_value_key_map())
+            config_addrs = {dev.slave_addr for dev in self._config.all_devices}
+            self._db_manager.sync_registry_devices(config_addrs)
 
         self._statusbar.showMessage("配置已重载", 5000)
 

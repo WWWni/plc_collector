@@ -81,6 +81,7 @@ class AppConfig:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     display_config: dict = field(default_factory=dict)  # {device_type: [field_def, ...]}
+    statistics_config: dict = field(default_factory=dict)  # {device_type: value_key}
     collector_id: str = ""  # 采集实例唯一标识，空则自动解析
 
     @property
@@ -215,6 +216,10 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     # ---- 解析展示配置 ----
     if "display_config" in raw and isinstance(raw["display_config"], dict):
         config.display_config = raw["display_config"]
+
+    # ---- 解析统计配置 ----
+    if "statistics_config" in raw and isinstance(raw["statistics_config"], dict):
+        config.statistics_config = raw["statistics_config"]
 
     # ---- 解析采集实例 ID ----
     config.collector_id = _resolve_collector_id(

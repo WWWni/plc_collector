@@ -525,43 +525,32 @@
     "read_mode": "grouped",
     "reg_base": null,
     "reg_count": null,
+    "read_function": "holding",
     "read_groups": [
       {
-        "start": 62,
+        "start": 192,
         "count": 2
       },
       {
-        "start": 192,
-        "count": 3
+        "start": 194,
+        "count": 1
       }
     ],
     "registers": [
       {
         "idx": 0,
-        "name": "unit",
-        "addr": 62,
-        "desc": "单位: 0=米, 1=码"
-      },
-      {
-        "idx": 1,
-        "name": "mode",
-        "addr": 63,
-        "desc": "工作模式: 0=计长, 1=速度"
-      },
-      {
-        "idx": 2,
         "name": "display_h",
         "addr": 192,
         "desc": "显示值高位"
       },
       {
-        "idx": 3,
+        "idx": 1,
         "name": "display_l",
         "addr": 193,
         "desc": "显示值低位"
       },
       {
-        "idx": 4,
+        "idx": 2,
         "name": "decimal",
         "addr": 194,
         "desc": "小数点位数(0-4)"
@@ -569,65 +558,30 @@
     ],
     "parse_rules": [
       {
-        "field": "unit",
-        "op": "direct",
-        "src_idx": 0
-      },
-      {
-        "field": "unit_text",
-        "op": "value_map",
-        "src_idx": 0,
-        "map_name": "unit_map",
-        "raw_field": "unit"
-      },
-      {
-        "field": "mode",
-        "op": "direct",
-        "src_idx": 1
-      },
-      {
-        "field": "mode_text",
-        "op": "value_map",
-        "src_idx": 1,
-        "map_name": "mode_map",
-        "raw_field": "mode"
-      },
-      {
         "field": "decimal_point",
         "op": "direct",
-        "src_idx": 4
+        "src_idx": 2
       },
       {
         "field": "display_raw",
         "op": "combine32_signed",
         "src_indices": [
-          2,
-          3
+          0,
+          1
         ]
       },
       {
         "field": "display_value",
         "op": "combine32_signed_decimal",
         "src_indices": [
-          2,
-          3
+          0,
+          1
         ],
         "decimal_field": "decimal_point"
       }
     ],
     "bit_fields": null,
-    "run_mode_rules": [
-      {
-        "field": "mode",
-        "value": 0,
-        "mode": "counting"
-      },
-      {
-        "field": "mode",
-        "value": 1,
-        "mode": "speed"
-      }
-    ],
+    "run_mode_rules": [],
     "fault_names": null,
     "display_fields": [
       {
@@ -635,47 +589,18 @@
         "label": "当前值",
         "unit": "dynamic",
         "format": ".2f"
-      },
-      {
-        "key": "unit_text",
-        "label": "单位",
-        "unit": "",
-        "format": "s"
-      },
-      {
-        "key": "mode_text",
-        "label": "模式",
-        "unit": "",
-        "format": "s"
       }
     ],
     "status_map": {
-      "counting": {
+      "online": {
         "color": "#4caf50",
-        "text": "计长中"
-      },
-      "speed": {
-        "color": "#4caf50",
-        "text": "测速中"
-      },
-      "unknown": {
-        "color": "#9e9e9e",
-        "text": "未知"
+        "text": "在线"
       },
       "offline": {
         "color": "#616161",
         "text": "离线"
       }
     },
-    "value_mappings": {
-      "unit_map": {
-        "0": "米",
-        "1": "码"
-      },
-      "mode_map": {
-        "0": "计长",
-        "1": "速度"
-      }
-    }
+    "value_mappings": null
   }
 ]

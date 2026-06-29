@@ -18,6 +18,7 @@ from typing import List, Optional
 from transport.base import TransportBase
 from protocol.modbus_rtu import (
     build_read_holding,
+    build_read_input,
     build_write_single,
     build_write_multiple,
     parse_read_response,
@@ -45,12 +46,14 @@ class TcpTransparentTransport(TransportBase):
         tcp_timeout: float = 1.0,
         modbus_timeout: float = 1.0,
         modbus_retry: int = 0,
+        modbus_retry_delay: float = 0.1,
     ):
         self._host = host
         self._port = port
         self._tcp_timeout = tcp_timeout
         self._modbus_timeout = modbus_timeout
         self._modbus_retry = modbus_retry
+        self._modbus_retry_delay = modbus_retry_delay
 
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
@@ -144,6 +147,14 @@ class TcpTransparentTransport(TransportBase):
                     raise ConnectionError("TCP连接已断开（EOF）")
                 response += chunk
                 remaining -= len(chunk)
+
+                # 检测Modbus异常响应
+                # 异常帧: [地址(1)][功能码|0x80(1)][异常码(1)][CRC(2)] = 5字节
+                # 正常响应更长，检测到异常时将期望长度调整为5，避免无效等待
+                if len(response) >= 2 and remaining > 0 and (response[1] & 0x80):
+                    remaining = 5 - len(response)
+                    if remaining < 0:
+                        remaining = 0
         except asyncio.TimeoutError:
             raise TimeoutError(
                 f"接收超时 ({timeout}s), "
@@ -190,7 +201,18 @@ class TcpTransparentTransport(TransportBase):
                     response = await self._send_and_receive(
                         request_frame, expected_len, effective_timeout
                     )
-                    return response
+
+                    # 检测Modbus异常响应
+                    # 异常帧: [地址(1)][功能码|0x80(1)][异常码(1)][CRC(2)] = 5字节
+                    if len(response) >= 2 and (response[1] & 0x80):
+                        exc_code = response[2] if len(response) >= 3 else 0
+                        last_error = ModbusException(response[1] & 0x7F, exc_code)
+                        logger.warning(
+                            f"[从站{slave_addr}] Modbus异常响应 (第{attempt+1}/{total_attempts}次): {last_error}"
+                        )
+                        # Modbus应用层异常：TCP链路正常，不需要重连
+                    else:
+                        return response
 
                 except (ConnectionError, TimeoutError, OSError) as e:
                     last_error = e
@@ -202,6 +224,11 @@ class TcpTransparentTransport(TransportBase):
                             await self._reconnect()
                         except Exception as re_err:
                             logger.error(f"[从站{slave_addr}] 重连失败: {re_err}")
+                    continue  # 网络异常重连后直接进下一轮，不走通用延迟
+
+                # 通用重试延迟：Modbus异常响应后等待总线恢复
+                if attempt < effective_retry:
+                    await asyncio.sleep(self._modbus_retry_delay)
 
             raise ConnectionError(
                 f"[从站{slave_addr}] 通信失败，已重试{effective_retry}次: {last_error}"
@@ -215,9 +242,13 @@ class TcpTransparentTransport(TransportBase):
         *,
         timeout: Optional[float] = None,
         retry: Optional[int] = None,
+        read_function: str = "holding",
     ) -> List[int]:
-        """读取保持寄存器 (0x03)"""
-        request = build_read_holding(slave_addr, start_reg, quantity)
+        """读取寄存器 (0x03 保持 / 0x04 输入)"""
+        if read_function == "input":
+            request = build_read_input(slave_addr, start_reg, quantity)
+        else:
+            request = build_read_holding(slave_addr, start_reg, quantity)
         expected_len = get_expected_response_length(request)
 
         if expected_len is None:

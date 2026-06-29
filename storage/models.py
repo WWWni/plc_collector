@@ -71,6 +71,11 @@ class DeviceTypeDef(Base):
     reg_count = Column(Integer, nullable=True)  # 连续读取: 寄存器数量
     read_groups = Column(JSONType, nullable=True)  # 分组读取: [{"start":N,"count":N},...]
 
+    # ---- 读取功能码类型 ----
+    # "holding"=读保持寄存器(0x03, 默认), "input"=读输入寄存器(0x04)
+    # 部分设备(如N90SC计米器某些固件)不支持0x03, 需使用0x04
+    read_function = Column(String(10), nullable=False, default="holding")
+
     # ---- 寄存器定义 ----
     # [{"idx":0,"name":"current_gear","addr":2202,"desc":"档位"}, ...]
     registers = Column(JSONType, nullable=False)
@@ -173,6 +178,8 @@ class DeviceRegistry(Base):
     server_index = Column(SmallInteger, nullable=False, default=0)
     first_seen = Column(DateTime, nullable=False, default=datetime.now)
     last_seen = Column(DateTime, nullable=False, default=datetime.now)
+    value_key = Column(String(50), nullable=True)   # 统计配置：选中的字段key
+    value = Column(String(100), nullable=True)      # 该字段的实时值
 
     __table_args__ = (
         Index("uk_device_collector_addr", "collector_id", "slave_addr", unique=True),

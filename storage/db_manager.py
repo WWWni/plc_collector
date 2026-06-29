@@ -29,6 +29,11 @@ class DatabaseManager:
         self._collector_id = collector_id
         self._engine = None
         self._session_factory = None
+        self._value_key_map: dict = {}  # slave_addr -> value_key
+
+    def set_value_key_map(self, value_key_map: dict):
+        """设置统计配置映射（slave_addr -> value_key）"""
+        self._value_key_map = value_key_map
 
     @property
     def session_factory(self):
@@ -54,9 +59,13 @@ class DatabaseManager:
         # device_type_def 用 ORM 建表（无分区需求）
         from storage.models import DeviceTypeDef, DeviceRegistry
         DeviceTypeDef.__table__.create(self._engine, checkfirst=True)
+        # 为已有表补充 read_function 列（幂等操作）
+        self._ensure_type_def_columns()
 
         # device_registry 设备注册表
         DeviceRegistry.__table__.create(self._engine, checkfirst=True)
+        # 为已有表补充新列（幂等操作）
+        self._ensure_registry_columns()
 
         # plc_data 用原生 DDL 建分区表
         self._create_partitioned_table()
@@ -77,6 +86,48 @@ class DatabaseManager:
             f"数据库初始化成功: {self._config.engine}://"
             f"{self._config.host}:{self._config.port}/{self._config.database}"
         )
+
+    def _ensure_type_def_columns(self):
+        """为已有的 device_type_def 表补充 read_function 列（幂等操作）"""
+        try:
+            with self._engine.connect() as conn:
+                result = conn.execute(text(
+                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'device_type_def'"
+                ))
+                existing_cols = {row[0] for row in result}
+
+                if "read_function" not in existing_cols:
+                    conn.execute(text(
+                        "ALTER TABLE device_type_def ADD COLUMN read_function VARCHAR(10) NOT NULL DEFAULT 'holding'"
+                    ))
+                    conn.commit()
+                    logger.info("已为 device_type_def 表添加 read_function 列")
+        except Exception as e:
+            logger.warning(f"补充 device_type_def 列失败: {e}")
+
+    def _ensure_registry_columns(self):
+        """为已有的 device_registry 表补充 value_key 和 value 列（幂等操作）"""
+        try:
+            with self._engine.connect() as conn:
+                result = conn.execute(text(
+                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'device_registry'"
+                ))
+                existing_cols = {row[0] for row in result}
+
+                if "value_key" not in existing_cols:
+                    conn.execute(text(
+                        "ALTER TABLE device_registry ADD COLUMN value_key VARCHAR(50) DEFAULT NULL"
+                    ))
+                    conn.commit()
+                if "value" not in existing_cols:
+                    conn.execute(text(
+                        "ALTER TABLE device_registry ADD COLUMN value VARCHAR(100) DEFAULT NULL"
+                    ))
+                    conn.commit()
+        except Exception as e:
+            logger.warning(f"补充 device_registry 列失败: {e}")
 
     def _create_partitioned_table(self):
         """用原生 DDL 创建按天分区的 plc_data 表"""
@@ -217,7 +268,7 @@ class DatabaseManager:
         return inserted
 
     def _register_devices(self, data_list: List[dict]):
-        """注册设备到 device_registry（INSERT ON DUPLICATE KEY UPDATE）"""
+        """注册设备到 device_registry（INSERT ON DUPLICATE KEY UPDATE），同时更新统计值"""
         if not self._engine:
             return
 
@@ -229,15 +280,23 @@ class DatabaseManager:
                 continue
             seen.add(addr)
 
+            # 查找该设备类型的统计字段配置
+            device_type = data.get("device_type", "")
+            value_key = self._value_key_map.get(device_type, "")
+            value = str(data.get(value_key, "")) if value_key else None
+
             sql = text("""
                 INSERT INTO device_registry 
-                    (device_name, device_type, slave_addr, collector_id, server_index, first_seen, last_seen)
+                    (device_name, device_type, slave_addr, collector_id, server_index, 
+                     first_seen, last_seen, value_key, value)
                 VALUES 
-                    (:name, :type, :addr, :cid, :sidx, :now, :now)
+                    (:name, :type, :addr, :cid, :sidx, :now, :now, :vkey, :val)
                 ON DUPLICATE KEY UPDATE 
                     device_name = VALUES(device_name),
                     device_type = VALUES(device_type),
-                    last_seen = VALUES(last_seen)
+                    last_seen = VALUES(last_seen),
+                    value_key = VALUES(value_key),
+                    value = VALUES(value)
             """)
             try:
                 with self._engine.connect() as conn:
@@ -248,10 +307,36 @@ class DatabaseManager:
                         "cid": self._collector_id,
                         "sidx": data.get("server_index", 0),
                         "now": now,
+                        "vkey": value_key if value_key else None,
+                        "val": value,
                     })
                     conn.commit()
             except Exception:
                 pass  # 注册失败不影响采集
+
+    def sync_registry_devices(self, config_addrs: set):
+        """同步 device_registry：删除不在配置中的设备"""
+        if not self._engine or not self._collector_id:
+            return
+        if not config_addrs:
+            return  # 配置为空时不清理，防止误删全部
+
+        try:
+            placeholders = ",".join([f":a{i}" for i in range(len(config_addrs))])
+            params = {f"a{i}": addr for i, addr in enumerate(config_addrs)}
+            params["cid"] = self._collector_id
+
+            sql = text(
+                f"DELETE FROM device_registry "
+                f"WHERE collector_id = :cid AND slave_addr NOT IN ({placeholders})"
+            )
+            with self._engine.connect() as conn:
+                result = conn.execute(sql, params)
+                conn.commit()
+                if result.rowcount > 0:
+                    logger.info(f"已从 device_registry 清理 {result.rowcount} 台已删除设备")
+        except Exception as e:
+            logger.warning(f"同步 device_registry 失败: {e}")
 
     def query_device_registry(self) -> List[dict]:
         """查询所有已注册设备"""
@@ -470,6 +555,7 @@ class DatabaseManager:
                     "reg_base": row.reg_base,
                     "reg_count": row.reg_count,
                     "read_groups": row.read_groups,
+                    "read_function": getattr(row, "read_function", None) or "holding",
                     "registers": row.registers,
                     "parse_rules": row.parse_rules,
                     "bit_fields": row.bit_fields,

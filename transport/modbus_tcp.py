@@ -154,9 +154,10 @@ class ModbusTcpTransport(TransportBase):
         *,
         timeout: Optional[float] = None,
         retry: Optional[int] = None,
+        read_function: str = "holding",
     ) -> List[int]:
         """
-        读取保持寄存器 (功能码 0x03)
+        读取寄存器 (功能码 0x03 或 0x04)
 
         pymodbus自动处理Modbus TCP帧头，
         ZLAN5143D自动将Modbus TCP转为RTU发送到串口。
@@ -164,6 +165,7 @@ class ModbusTcpTransport(TransportBase):
         Args:
             timeout: 单次超时时间(秒)，None则使用全局默认值
             retry: 重试次数，None则使用全局默认值
+            read_function: "holding"=读保持寄存器(0x03)，"input"=读输入寄存器(0x04)
         """
         if not self.is_connected:
             await self.connect()
@@ -171,12 +173,20 @@ class ModbusTcpTransport(TransportBase):
         effective_timeout = timeout if timeout is not None else self._modbus_timeout
         effective_retry = retry if retry is not None else self._modbus_retry
 
+        # 根据read_function选择pymodbus方法
+        if read_function == "input":
+            modbus_read = self._client.read_input_registers
+            func_desc = "0x04(输入)"
+        else:
+            modbus_read = self._client.read_holding_registers
+            func_desc = "0x03(保持)"
+
         last_error = None
         total_attempts = effective_retry + 1
         for attempt in range(total_attempts):
             try:
                 response = await asyncio.wait_for(
-                    self._client.read_holding_registers(
+                    modbus_read(
                         address=start_reg,
                         count=quantity,
                         **_slave_kwargs(slave_addr),
@@ -187,7 +197,7 @@ class ModbusTcpTransport(TransportBase):
                 if response.isError():
                     # Modbus 应用层异常：TCP链路正常，不需要重连
                     logger.warning(
-                        f"[从站{slave_addr}] Modbus异常响应 (第{attempt+1}/{total_attempts}次): {response}"
+                        f"[从站{slave_addr}] Modbus异常响应 {func_desc} (第{attempt+1}/{total_attempts}次): {response}"
                     )
                     last_error = RuntimeError(f"Modbus异常响应: {response}")
                 else:

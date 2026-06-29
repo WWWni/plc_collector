@@ -21,6 +21,7 @@ from gui.config.devices_page import DevicesPage
 from gui.config.database_page import DatabasePage
 from gui.config.scheduler_page import SchedulerPage
 from gui.config.display_page import DisplayPage
+from gui.config.statistics_page import StatisticsPage
 
 
 class NavButton(QPushButton):
@@ -112,6 +113,7 @@ class ConfigMainWindow(QDialog):
             ("采集参数", "⏱"),
             ("数据库", "💾"),
             ("展示配置", "📊"),
+            ("统计配置", "📈"),
         ]
 
         for text, icon in nav_items:
@@ -146,12 +148,14 @@ class ConfigMainWindow(QDialog):
         self._scheduler_page = SchedulerPage(self._config)
         self._database_page = DatabasePage(self._config)
         self._display_page = DisplayPage(self._config)
+        self._statistics_page = StatisticsPage(self._config)
 
         self._stack.addWidget(self._servers_page)
         self._stack.addWidget(self._devices_page)
         self._stack.addWidget(self._scheduler_page)
         self._stack.addWidget(self._database_page)
         self._stack.addWidget(self._display_page)
+        self._stack.addWidget(self._statistics_page)
 
         right_panel.addWidget(self._stack, 1)
 
@@ -234,6 +238,7 @@ class ConfigMainWindow(QDialog):
         sched_data = self._scheduler_page.save_to_dict()
         db_data = self._database_page.save_to_dict()
         display_data = self._display_page.save_to_dict()  # {"display_config": {...}}
+        stats_data = self._statistics_page.save_to_dict()  # {"statistics_config": {...}}
 
         # 将设备列表合并到对应的服务器配置中
         servers_list = servers_data.get("servers", [])
@@ -249,6 +254,7 @@ class ConfigMainWindow(QDialog):
         merged.update(sched_data)
         merged.update(db_data)
         merged.update(display_data)
+        merged.update(stats_data)
         return merged
 
     def _validate_all(self) -> list:
@@ -260,6 +266,7 @@ class ConfigMainWindow(QDialog):
             self._scheduler_page,
             self._database_page,
             self._display_page,
+            self._statistics_page,
         ]:
             errors.extend(page.validate())
         return errors

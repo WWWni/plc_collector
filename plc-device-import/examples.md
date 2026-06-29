@@ -16,6 +16,7 @@
   "reg_base": 2202,
   "reg_count": 20,
   "read_groups": null,
+  "read_function": "holding",
 
   "registers": [
     {"idx": 0,  "name": "current_gear",   "addr": 2202, "desc": "当前档位"},
@@ -170,7 +171,9 @@
 
 ## 示例 2: N90SC-4 计米器（grouped 模式）
 
-特点：非连续地址、分组读取、有符号32位+动态小数点、枚举映射。
+特点：非连续地址、分组读取、有符号32位+动态小数点。
+
+> **⚠ 实践经验**：N90SC 固件对读取有严格限制，虽然说明书声称 3EH/3FH（单位/模式）可读、C0H 可一次读 3 个 word，但实际固件会拒绝部分请求。最终配置只保留了可成功读取的 C0H(2 word) 和 C2H(1 word)。详见下方排障记录。
 
 ```json
 {
@@ -181,55 +184,40 @@
   "read_mode": "grouped",
   "reg_base": null,
   "reg_count": null,
+  "read_function": "holding",
   "read_groups": [
-    {"start": 62,  "count": 2},
-    {"start": 192, "count": 3}
+    {"start": 192, "count": 2},
+    {"start": 194, "count": 1}
   ],
 
   "registers": [
-    {"idx": 0, "name": "unit",       "addr": 62,  "desc": "单位: 0=米, 1=码"},
-    {"idx": 1, "name": "mode",       "addr": 63,  "desc": "工作模式: 0=计长, 1=速度"},
-    {"idx": 2, "name": "display_h",  "addr": 192, "desc": "显示值高位"},
-    {"idx": 3, "name": "display_l",  "addr": 193, "desc": "显示值低位"},
-    {"idx": 4, "name": "decimal",    "addr": 194, "desc": "小数点位数(0-4)"}
+    {"idx": 0, "name": "display_h",  "addr": 192, "desc": "显示值高位"},
+    {"idx": 1, "name": "display_l",  "addr": 193, "desc": "显示值低位"},
+    {"idx": 2, "name": "decimal",    "addr": 194, "desc": "小数点位数(0-4)"}
   ],
 
   "parse_rules": [
-    {"field": "unit",          "op": "direct",                  "src_idx": 0},
-    {"field": "unit_text",     "op": "value_map",               "src_idx": 0, "map_name": "unit_map", "raw_field": "unit"},
-    {"field": "mode",          "op": "direct",                  "src_idx": 1},
-    {"field": "mode_text",     "op": "value_map",               "src_idx": 1, "map_name": "mode_map", "raw_field": "mode"},
-    {"field": "decimal_point", "op": "direct",                  "src_idx": 4},
-    {"field": "display_raw",   "op": "combine32_signed",        "src_indices": [2, 3]},
-    {"field": "display_value", "op": "combine32_signed_decimal", "src_indices": [2, 3], "decimal_field": "decimal_point"}
+    {"field": "decimal_point", "op": "direct",                  "src_idx": 2},
+    {"field": "display_raw",   "op": "combine32_signed",        "src_indices": [0, 1]},
+    {"field": "display_value", "op": "combine32_signed_decimal", "src_indices": [0, 1], "decimal_field": "decimal_point"}
   ],
 
   "bit_fields": null,
 
-  "run_mode_rules": [
-    {"field": "mode", "value": 0, "mode": "counting"},
-    {"field": "mode", "value": 1, "mode": "speed"}
-  ],
+  "run_mode_rules": [],
 
   "fault_names": null,
 
   "display_fields": [
-    {"key": "display_value", "label": "当前值", "unit": "dynamic", "format": ".2f"},
-    {"key": "unit_text",     "label": "单位",   "unit": "",        "format": "s"},
-    {"key": "mode_text",     "label": "模式",   "unit": "",        "format": "s"}
+    {"key": "display_value", "label": "当前值", "unit": "dynamic", "format": ".2f"}
   ],
 
   "status_map": {
-    "counting": {"color": "#4caf50", "text": "计长中"},
-    "speed":    {"color": "#4caf50", "text": "测速中"},
-    "unknown":  {"color": "#9e9e9e", "text": "未知"},
+    "online":   {"color": "#4caf50", "text": "在线"},
     "offline":  {"color": "#616161", "text": "离线"}
   },
 
-  "value_mappings": {
-    "unit_map": {"0": "米", "1": "码"},
-    "mode_map": {"0": "计长", "1": "速度"}
-  }
+  "value_mappings": null
 }
 ```
 
@@ -237,14 +225,32 @@
 
 | 寄存器 | 操作 | 说明 |
 |--------|------|------|
-| idx 0 (unit=0) | direct → value_map | 原始值 0, 映射为 "米" |
-| idx 2,3 (hi=0, lo=12345) | combine32_signed | (0<<16)\|12345 = 12345 (正数) |
-| idx 2,3 + idx 4 (decimal=2) | combine32_signed_decimal | 12345 / 10^2 = 123.45 |
-| idx 4 (decimal=2) | direct | 小数点位数，被上面的规则引用 |
+| idx 0,1 (hi=0, lo=12345) | combine32_signed | (0<<16)\|12345 = 12345 (正数) |
+| idx 0,1 + idx 2 (decimal=2) | combine32_signed_decimal | 12345 / 10^2 = 123.45 |
+| idx 2 (decimal=2) | direct | 小数点位数，被上面的规则引用 |
 
 ### 分组索引对照
 
 ```
-group_0 (start=0x3E, count=2):  idx 0 (addr 62), idx 1 (addr 63)
-group_1 (start=0xC0, count=3):  idx 2 (addr 192), idx 3 (addr 193), idx 4 (addr 194)
+group_0 (start=0xC0, count=2):  idx 0 (addr 192), idx 1 (addr 193)
+group_1 (start=0xC2, count=1):  idx 2 (addr 194)
 ```
+
+### N90SC 排障记录
+
+N90SC 的固件行为与说明书不完全一致，排查过程中遇到了以下问题：
+
+| 尝试的配置 | 请求帧 | 设备响应 | 异常码 | 原因分析 |
+|-----------|--------|---------|--------|---------|
+| 3EH, count=2 | `01 03 003E 0002 A5C7` | `01 83 01 80F0` | 01H | 不支持跨参数读取（3EH+3FH） |
+| 3EH, count=1 | `01 03 003E 0001 E5C6` | `01 83 01 80F0` | 01H | 3EH 寄存器固件拒绝读取 |
+| 3FH, count=1 | `01 03 003F 0001 B406` | （未测试，预计同样拒绝） | — | 同上 |
+| C0H, count=3 | `01 03 00C0 0003 05F7` | `01 83 03 0131` | 03H | 限制单次读取数量（N90SC的03H=非法寄存器数量） |
+| **C0H, count=2** | `01 03 00C0 0002 C437` | 正常响应 | — | ✅ 成功 |
+| **C2H, count=1** | `01 03 00C2 0001 25F6` | 正常响应 | — | ✅ 成功 |
+
+**关键结论**：
+1. N90SC 的异常码 03H 含义为"非法寄存器数量"（非标准 Modbus 的"非法数据值"）
+2. 3EH/3FH 寄存器虽然说明书标注可读，但固件实际拒绝读取
+3. C0H 虽然说明书说可读 3 个 word，但固件只允许读 2 个
+4. 最终只保留 C0H(2 word) + C2H(1 word) 的读取配置

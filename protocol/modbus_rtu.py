@@ -2,7 +2,7 @@
 Modbus RTU 协议帧构造与解析模块
 ================================
 用于TCP透传模式下，手动构造Modbus RTU帧并通过TCP Socket发送。
-支持功能码: 0x03(读保持寄存器), 0x06(写单个寄存器), 0x10(写多个寄存器)
+支持功能码: 0x03(读保持寄存器), 0x04(读输入寄存器), 0x06(写单个寄存器), 0x10(写多个寄存器)
 
 帧格式:
   请求: [从站地址(1B)] [功能码(1B)] [数据(NB)] [CRC16(2B)]
@@ -118,6 +118,30 @@ def build_read_holding(slave_addr: int, start_reg: int, quantity: int) -> bytes:
     return append_crc16(pdu)
 
 
+def build_read_input(slave_addr: int, start_reg: int, quantity: int) -> bytes:
+    """
+    构造读输入寄存器请求帧 (功能码 0x04)
+
+    部分设备（如N90SC计米器某些固件版本）不支持0x03(读保持寄存器)，
+    需要使用0x04(读输入寄存器)来读取相同地址的数据。
+
+    Args:
+        slave_addr: 从站地址 (1-247)
+        start_reg: 起始寄存器地址 (0-65535)
+        quantity: 读取寄存器数量 (1-125)
+
+    Returns:
+        完整的Modbus RTU请求帧（含CRC）
+    """
+    if not 1 <= slave_addr <= 247:
+        raise ValueError(f"从站地址超出范围(1-247): {slave_addr}")
+    if not 1 <= quantity <= 125:
+        raise ValueError(f"寄存器数量超出范围(1-125): {quantity}")
+
+    pdu = struct.pack(">BBH H", slave_addr, 0x04, start_reg, quantity)
+    return append_crc16(pdu)
+
+
 def build_write_single(slave_addr: int, reg_addr: int, value: int) -> bytes:
     """
     构造写单个寄存器请求帧 (功能码 0x06)
@@ -228,7 +252,10 @@ def _check_frame(frame: bytes, expected_slave: int) -> Tuple[int, bytes]:
 
 def parse_read_response(frame: bytes, expected_slave: int) -> List[int]:
     """
-    解析读保持寄存器响应帧 (功能码 0x03)
+    解析读寄存器响应帧 (功能码 0x03 或 0x04)
+
+    0x03(读保持寄存器)和0x04(读输入寄存器)的响应帧格式完全相同，
+    因此使用同一个解析函数。
 
     Args:
         frame: 完整响应帧（含CRC）
@@ -245,8 +272,8 @@ def parse_read_response(frame: bytes, expected_slave: int) -> List[int]:
     """
     func_code, payload = _check_frame(frame, expected_slave)
 
-    if func_code != 0x03:
-        raise ValueError(f"期望功能码0x03，实际0x{func_code:02X}")
+    if func_code not in (0x03, 0x04):
+        raise ValueError(f"期望功能码0x03或0x04，实际0x{func_code:02X}")
 
     if len(payload) < 1:
         raise ValueError("响应数据不完整")
@@ -313,8 +340,8 @@ def get_expected_response_length(request_frame: bytes) -> Optional[int]:
 
     func_code = request_frame[1]
 
-    if func_code == 0x03:
-        # 读保持寄存器：响应长度 = 1(地址) + 1(功能码) + 1(字节数) + N(数据) + 2(CRC)
+    if func_code in (0x03, 0x04):
+        # 读寄存器(保持/输入)：响应长度 = 1(地址) + 1(功能码) + 1(字节数) + N(数据) + 2(CRC)
         quantity = struct.unpack(">H", request_frame[4:6])[0]
         return 3 + quantity * 2 + 2
 

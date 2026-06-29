@@ -100,6 +100,7 @@ class Device:
                         quantity=group["count"],
                         timeout=self._timeout,
                         retry=self._retry,
+                        read_function=getattr(type_def, 'READ_FUNCTION', 'holding'),
                     )
                     all_values[f"group_{i}"] = values
                 data = type_def.parse_registers(all_values)
@@ -111,6 +112,7 @@ class Device:
                     quantity=type_def.REG_COUNT,
                     timeout=self._timeout,
                     retry=self._retry,
+                    read_function=getattr(type_def, 'READ_FUNCTION', 'holding'),
                 )
                 data = type_def.parse_registers(values)
 

@@ -40,6 +40,9 @@ class GenericParser:
         else:
             self.READ_GROUPS = type_def["read_groups"]
 
+        # 读取功能码类型: "holding"(0x03) 或 "input"(0x04)
+        self.READ_FUNCTION = type_def.get("read_function", "holding") or "holding"
+
         # 解析配置
         self._registers = type_def.get("registers") or []
         self._parse_rules = type_def.get("parse_rules") or []
@@ -149,7 +152,15 @@ class GenericParser:
         return result
 
     def get_run_mode(self, parsed_data: Dict[str, Any]) -> str:
-        """根据 run_mode_rules 判断运行模式"""
+        """根据 run_mode_rules 判断运行模式
+
+        无 run_mode_rules 的设备（如简单计米器）返回 "online"，
+        表示采集成功即在线。
+        有 run_mode_rules 但均未匹配时返回 "unknown"。
+        """
+        if not self._run_mode_rules:
+            return "online"
+
         for rule in self._run_mode_rules:
             field = rule["field"]
             expected = rule.get("value")  # None 表示 True (布尔字段)
